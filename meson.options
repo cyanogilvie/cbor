@@ -1,0 +1,5 @@
+option('debugmode',
+	type: 'boolean',
+	value: false,
+	description: 'Enable debug mode'
+)

@@ -1,0 +1,11 @@
+*.swp
+*.swo
+*.o
+*.a
+*.so
+/builddir
+subprojects/libtommath-*
+subprojects/hedley-*
+subprojects/tcl
+subprojects/packagecache
+subprojects/.wraplock
