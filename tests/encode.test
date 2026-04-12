@@ -1,0 +1,134 @@
+source [file join [file dirname [info script]] common.tcl]; runtests {
+
+# cbor encode - RFC 8949 Appendix A integer vectors {{{
+test cbor_encode-1.1  {int 0}          -body {binary encode hex [cbor encode int 0]}          -result 00
+test cbor_encode-1.2  {int 1}          -body {binary encode hex [cbor encode int 1]}          -result 01
+test cbor_encode-1.3  {int 10}         -body {binary encode hex [cbor encode int 10]}         -result 0a
+test cbor_encode-1.4  {int 23}         -body {binary encode hex [cbor encode int 23]}         -result 17
+test cbor_encode-1.5  {int 24}         -body {binary encode hex [cbor encode int 24]}         -result 1818
+test cbor_encode-1.6  {int 25}         -body {binary encode hex [cbor encode int 25]}         -result 1819
+test cbor_encode-1.7  {int 100}        -body {binary encode hex [cbor encode int 100]}        -result 1864
+test cbor_encode-1.8  {int 1000}       -body {binary encode hex [cbor encode int 1000]}       -result 1903e8
+test cbor_encode-1.9  {int 1000000}    -body {binary encode hex [cbor encode int 1000000]}    -result 1a000f4240
+test cbor_encode-1.10 {int 1e12}       -body {binary encode hex [cbor encode int 1000000000000]} -result 1b000000e8d4a51000
+test cbor_encode-1.11 {int -1}         -body {binary encode hex [cbor encode int -1]}         -result 20
+test cbor_encode-1.12 {int -10}        -body {binary encode hex [cbor encode int -10]}        -result 29
+test cbor_encode-1.13 {int -100}       -body {binary encode hex [cbor encode int -100]}       -result 3863
+test cbor_encode-1.14 {int -1000}      -body {binary encode hex [cbor encode int -1000]}      -result 3903e7
+# }}}
+
+# cbor encode - float precision selection {{{
+test cbor_encode-2.1  {float 0.0 -> half}       -body {binary encode hex [cbor encode float 0.0]}       -result f90000
+test cbor_encode-2.2  {float -0.0 -> half}      -body {binary encode hex [cbor encode float -0.0]}      -result f98000
+test cbor_encode-2.3  {float 1.0 -> half}       -body {binary encode hex [cbor encode float 1.0]}       -result f93c00
+test cbor_encode-2.4  {float 1.5 -> half}       -body {binary encode hex [cbor encode float 1.5]}       -result f93e00
+test cbor_encode-2.5  {float -4.0 -> half}      -body {binary encode hex [cbor encode float -4.0]}      -result f9c400
+test cbor_encode-2.6  {float 65504.0 -> half}   -body {binary encode hex [cbor encode float 65504.0]}   -result f97bff
+test cbor_encode-2.7  {float 100000.0 -> single} -body {binary encode hex [cbor encode float 100000.0]}  -result fa47c35000
+test cbor_encode-2.8  {float 1.1 -> double}     -body {binary encode hex [cbor encode float 1.1]}       -result fb3ff199999999999a
+test cbor_encode-2.9  {float Inf -> half}        -body {binary encode hex [cbor encode float Inf]}       -result f97c00
+test cbor_encode-2.10 {float -Inf -> half}       -body {binary encode hex [cbor encode float -Inf]}      -result f9fc00
+test cbor_encode-2.11 {float NaN -> half}        -body {binary encode hex [cbor encode float NaN]}       -result f97e00
+test cbor_encode-2.12 {float 3.4028234663852886e+38 -> single} -body {binary encode hex [cbor encode float 3.4028234663852886e+38]} -result fa7f7fffff
+test cbor_encode-2.13 {float 1.0e+300 -> double} -body {binary encode hex [cbor encode float 1.0e+300]}  -result fb7e37e43c8800759c
+test cbor_encode-2.14 {float 5.960464477539063e-8 -> half} -body {binary encode hex [cbor encode float 5.960464477539063e-8]} -result f90001
+test cbor_encode-2.15 {float 6.103515625e-5 -> half} -body {binary encode hex [cbor encode float 6.103515625e-5]} -result f90400
+# }}}
+
+# cbor encode - strings, bytes, bool, null {{{
+test cbor_encode-3.1  {empty string}    -body {binary encode hex [cbor encode string ""]}    -result 60
+test cbor_encode-3.2  {string "a"}      -body {binary encode hex [cbor encode string "a"]}   -result 6161
+test cbor_encode-3.3  {string "IETF"}   -body {binary encode hex [cbor encode string "IETF"]} -result 6449455446
+test cbor_encode-3.4  {empty bytes}     -body {binary encode hex [cbor encode bytes {}]}     -result 40
+test cbor_encode-3.5  {bytes}           -body {binary encode hex [cbor encode bytes [binary decode hex 01020304]]} -result 4401020304
+test cbor_encode-3.6  {bool true}       -body {binary encode hex [cbor encode bool true]}    -result f5
+test cbor_encode-3.7  {bool false}      -body {binary encode hex [cbor encode bool false]}   -result f4
+test cbor_encode-3.8  {null}            -body {binary encode hex [cbor encode null]}          -result f6
+test cbor_encode-3.9  {undefined}       -body {binary encode hex [cbor encode undefined]}     -result f7
+# }}}
+
+# cbor encode - compound types {{{
+test cbor_encode-4.1  {empty array} -body {binary encode hex [cbor encode array {}]} -result 80
+test cbor_encode-4.2  {array of ints} -body { #<<<
+	set items [list [cbor encode int 1] [cbor encode int 2] [cbor encode int 3]]
+	binary encode hex [cbor encode array $items]
+} -result 83010203
+#>>>
+test cbor_encode-4.3  {empty map} -body {binary encode hex [cbor encode map {}]} -result a0
+test cbor_encode-4.4  {tag 0} -body { #<<<
+	binary encode hex [cbor encode tag 0 [cbor encode string "2013-03-21T20:04:00Z"]]
+} -result c074323031332d30332d32315432303a30343a30305a
+#>>>
+# }}}
+
+# cbor encode - round-trip via cbor get {{{
+test cbor_encode-5.1  {int round-trip}    -body {cbor get [cbor encode int 42]}       -result 42
+test cbor_encode-5.2  {string round-trip} -body {cbor get [cbor encode string hello]} -result hello
+test cbor_encode-5.3  {float round-trip}  -body {cbor get [cbor encode float 3.14]}   -result 3.14
+test cbor_encode-5.4  {bool round-trip}   -body {cbor get [cbor encode bool yes]}     -result true
+test cbor_encode-5.5  {null round-trip}   -body {cbor get [cbor encode null]}         -result {}
+test cbor_encode-5.6  {array round-trip}  -body { #<<<
+	set items [list [cbor encode int 1] [cbor encode string hello] [cbor encode bool true]]
+	cbor get [cbor encode array $items]
+} -result {1 hello true}
+#>>>
+test cbor_encode-5.7  {wellformed check} -body { #<<<
+	lmap {type args} {int 0 int -1 int 1000000 float 3.14 string hello bool true} {
+		cbor wellformed [cbor encode $type {*}[list $args]]
+	}
+} -result {1 1 1 1 1 1}
+#>>>
+# }}}
+
+# cbor encode - simple values {{{
+test cbor_encode-6.1  {simple 0}   -body {binary encode hex [cbor encode simple 0]}   -result e0
+test cbor_encode-6.2  {simple 16}  -body {binary encode hex [cbor encode simple 16]}  -result f0
+test cbor_encode-6.3  {simple 32}  -body {binary encode hex [cbor encode simple 32]}  -result f820
+test cbor_encode-6.4  {simple 255} -body {binary encode hex [cbor encode simple 255]} -result f8ff
+test cbor_encode-6.5  {simple round-trip} -body { #<<<
+	cbor get [cbor encode simple 16]
+} -result {simple(16)}
+#>>>
+test cbor_encode-6.6  {simple 24 rejected} -body { #<<<
+	cbor encode simple 24
+} -returnCodes error -match glob -result {*Invalid simple value*}
+#>>>
+test cbor_encode-6.7  {simple -1 rejected} -body { #<<<
+	cbor encode simple -1
+} -returnCodes error -match glob -result {*Invalid simple value*}
+#>>>
+test cbor_encode-6.8  {simple 256 rejected} -body { #<<<
+	cbor encode simple 256
+} -returnCodes error -match glob -result {*Invalid simple value*}
+#>>>
+# }}}
+
+# cbor encode - imap (non-string keys) {{{
+test cbor_encode-7.1  {imap with integer keys} -body { #<<<
+	set m [list [cbor encode int 1] [cbor encode int -7] [cbor encode int 3] [cbor encode int -35]]
+	cbor get [cbor encode imap $m] 1
+} -result -7
+#>>>
+test cbor_encode-7.2  {imap empty} -body { #<<<
+	binary encode hex [cbor encode imap {}]
+} -result a0
+#>>>
+test cbor_encode-7.3  {imap odd count rejected} -body { #<<<
+	cbor encode imap [list [cbor encode int 1]]
+} -returnCodes error -result {imap requires an even number of elements (key-value pairs)}
+#>>>
+test cbor_encode-7.4  {imap wellformed} -body { #<<<
+	set m [list \
+		[cbor encode int 1] [cbor encode string alg] \
+		[cbor encode int 4] [cbor encode bytes [binary decode hex CAFE]]]
+	cbor wellformed [cbor encode imap $m]
+} -result 1
+#>>>
+# }}}
+
+}
+# Local Variables:
+# mode: tcl
+# tab-width: 4
+# End:
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

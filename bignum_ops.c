@@ -8,7 +8,11 @@
  */
 
 #if HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
+#endif
+
+#if HAVE_DEFER_POLYFILL
+#include <defer.h>
 #endif
 
 #include <tommath.h>
@@ -34,8 +38,9 @@ int bignum_from_nint64(mp_int *mp, uint64_t val)
 	int rc;
 
 	if (MP_OKAY != (rc = bignum_from_uint64(mp, val)))	return rc;
-	if (MP_OKAY != (rc = mp_add_d(mp, 1, mp)		))	{ mp_clear(mp); return rc; }
-	if (MP_OKAY != (rc = mp_neg(mp, mp)				))	{ mp_clear(mp); return rc; }
+	defer { if (rc != MP_OKAY) mp_clear(mp); }
+	if (MP_OKAY != (rc = mp_add_d(mp, 1, mp)		))	return rc;
+	if (MP_OKAY != (rc = mp_neg(mp, mp)				))	return rc;
 	return MP_OKAY;
 }
 
@@ -44,7 +49,8 @@ int bignum_from_ubin(mp_int *mp, const uint8_t *bytes, size_t len)
 	int rc;
 
 	if (MP_OKAY != (rc = mp_init(mp)					))	return rc;
-	if (MP_OKAY != (rc = mp_from_ubin(mp, bytes, len)	))	{ mp_clear(mp); return rc; }
+	defer { if (rc != MP_OKAY) mp_clear(mp); }
+	if (MP_OKAY != (rc = mp_from_ubin(mp, bytes, len)	))	return rc;
 	return MP_OKAY;
 }
 
@@ -53,9 +59,20 @@ int bignum_from_nbin(mp_int *mp, const uint8_t *bytes, size_t len)
 	int rc;
 
 	if (MP_OKAY != (rc = bignum_from_ubin(mp, bytes, len)	))	return rc;
-	if (MP_OKAY != (rc = mp_add_d(mp, 1, mp)				))	{ mp_clear(mp); return rc; }
-	if (MP_OKAY != (rc = mp_neg(mp, mp)						))	{ mp_clear(mp); return rc; }
+	defer { if (rc != MP_OKAY) mp_clear(mp); }
+	if (MP_OKAY != (rc = mp_add_d(mp, 1, mp)				))	return rc;
+	if (MP_OKAY != (rc = mp_neg(mp, mp)						))	return rc;
 	return MP_OKAY;
+}
+
+int bignum_to_ubin(const mp_int *mp, uint8_t *buf, size_t maxlen, size_t *written)
+{
+	return mp_to_ubin(mp, buf, maxlen, written);
+}
+
+size_t bignum_ubin_size(const mp_int *mp)
+{
+	return mp_ubin_size(mp);
 }
 
 int bignum_cmp(const mp_int *a, const mp_int *b)

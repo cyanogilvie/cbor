@@ -1,0 +1,100 @@
+source [file join [file dirname [info script]] common.tcl]; runtests {
+
+# Run each doc example script and verify the # => assertions in it.
+# This ensures the documentation examples stay correct.
+
+set examples_dir	[file join [file dirname [info script]] ../doc/examples]
+
+proc run_example file { #<<<
+	package require Tcl 9.0-
+	# Parse the example into complete Tcl commands, then verify
+	# # => assertions against the preceding command's result.
+	set script	[readFile $file]
+
+	set prev_result {}
+	set pending {}
+
+	foreach line [split $script \n] {
+		set trimmed [string trim $line]
+
+		# Standalone result assertion: # => expected
+		if {[regexp {^#\s*=>\s*(.*)} $trimmed -> expected]} {
+			if {$prev_result ne $expected} {
+				error "Example [file tail $file]: expected \"$expected\", got \"$prev_result\""
+			}
+			continue
+		}
+
+		# Skip blank lines and plain comments
+		if {$trimmed eq "" || [string match "#*" $trimmed]} continue
+
+		# Check for inline assertion: cmd ;# => expected
+		set inline_expected {}
+		if {[regexp {^(.+);\s*#\s*=>\s*(.*)$} $line -> cmd_part inline_expected]} {
+			set line $cmd_part
+		}
+
+		# Accumulate lines until we have a complete Tcl command
+		if {$pending ne ""} {
+			append pending \n $line
+		} else {
+			set pending $line
+		}
+
+		if {![info complete $pending]} continue
+
+		# Execute the complete command
+		set prev_result [uplevel 1 $pending]
+		set pending {}
+
+		if {$inline_expected ne "" && $prev_result ne $inline_expected} {
+			error "Example [file tail $file]: expected \"$inline_expected\", got \"$prev_result\""
+		}
+	}
+}
+
+#>>>
+
+test examples-1.1 {decode_basic.tcl} -body { #<<<
+	run_example [file join $examples_dir decode_basic.tcl]
+} -result {}
+#>>>
+test examples-1.2 {decode_navigate.tcl} -body { #<<<
+	run_example [file join $examples_dir decode_navigate.tcl]
+} -result {}
+#>>>
+test examples-1.3 {decode_extract.tcl} -body { #<<<
+	run_example [file join $examples_dir decode_extract.tcl]
+} -result {}
+#>>>
+test examples-1.4 {decode_tags.tcl} -body { #<<<
+	run_example [file join $examples_dir decode_tags.tcl]
+} -result {}
+#>>>
+test examples-2.1 {template_basic.tcl} -body { #<<<
+	run_example [file join $examples_dir template_basic.tcl]
+} -result {}
+#>>>
+test examples-2.2 {template_dict.tcl} -body { #<<<
+	run_example [file join $examples_dir template_dict.tcl]
+} -result {}
+#>>>
+test examples-2.3 {template_tag.tcl} -body { #<<<
+	run_example [file join $examples_dir template_tag.tcl]
+} -result {}
+#>>>
+test examples-2.4 {template_fragment.tcl} -body { #<<<
+	run_example [file join $examples_dir template_fragment.tcl]
+} -result {}
+#>>>
+test examples-3.1 {encode_primitives.tcl} -body { #<<<
+	run_example [file join $examples_dir encode_primitives.tcl]
+} -result {}
+#>>>
+
+}
+# Local Variables:
+# mode: tcl
+# tab-width: 4
+# End:
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

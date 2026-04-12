@@ -1,0 +1,333 @@
+source [file join [file dirname [info script]] common.tcl]; runtests {
+
+# cbor template - static JSON {{{
+test cbor_template-1.1  {integer}       -body {cbor get [cbor template {42}]}            -result 42
+test cbor_template-1.2  {negative int}  -body {cbor get [cbor template {-100}]}          -result -100
+test cbor_template-1.3  {float}         -body {cbor get [cbor template {3.14}]}          -result 3.14
+test cbor_template-1.4  {string}        -body {cbor get [cbor template {"hello"}]}       -result hello
+test cbor_template-1.5  {true}          -body {cbor get [cbor template {true}]}          -result true
+test cbor_template-1.6  {false}         -body {cbor get [cbor template {false}]}         -result false
+test cbor_template-1.7  {null}          -body {cbor get [cbor template {null}]}          -result {}
+test cbor_template-1.8  {empty array}   -body {binary encode hex [cbor template {[]}]}   -result 80
+test cbor_template-1.9  {empty object}  -body {binary encode hex [cbor template "\{\}"]}  -result a0
+test cbor_template-1.10 {array}         -body {cbor get [cbor template {[1, 2, 3]}]}     -result {1 2 3}
+test cbor_template-1.11 {object}        -body {cbor get [cbor template {{"a": 1, "b": 2}}]} -result {a 1 b 2}
+test cbor_template-1.12 {nested}        -body {cbor get [cbor template {[1, [2, 3], [4, 5]]}]} -result {1 {2 3} {4 5}}
+test cbor_template-1.13 {string escape} -body {cbor get [cbor template {"hello\nworld"}]} -result "hello\nworld"
+test cbor_template-1.14 {unicode escape} -body {cbor get [cbor template {"\\u00fc"}]}     -result {\u00fc}
+test cbor_template-1.15 {wellformed}    -body {string is true [cbor wellformed [cbor template {{"a": [1, true, null], "b": "hello"}}]]} -result 1
+# }}}
+
+# cbor template - substitution markers {{{
+test cbor_template-2.1  {~S: string subst} -body { #<<<
+	cbor get [cbor template {"~S:name"} {name Alice}]
+} -result Alice
+#>>>
+test cbor_template-2.2  {~N: number subst (int)} -body { #<<<
+	cbor get [cbor template {"~N:age"} {age 30}]
+} -result 30
+#>>>
+test cbor_template-2.3  {~N: number subst (float)} -body { #<<<
+	cbor get [cbor template {"~N:val"} {val 3.14}]
+} -result 3.14
+#>>>
+test cbor_template-2.4  {~B: boolean subst} -body { #<<<
+	cbor get [cbor template {"~B:flag"} {flag yes}]
+} -result true
+#>>>
+test cbor_template-2.5  {~L: literal string} -body { #<<<
+	cbor get [cbor template {"~L:~not a marker"}]
+} -result {~not a marker}
+#>>>
+test cbor_template-2.6  {~C: CBOR fragment} -body { #<<<
+	set frag [cbor encode int 42]
+	cbor get [cbor template {"~C:frag"} [dict create frag $frag]]
+} -result 42
+#>>>
+test cbor_template-2.6.1 {~C: rejects truncated CBOR} -body { #<<<
+	set bad [binary decode hex 81]
+	cbor template {"~C:bad"} [dict create bad $bad]
+} -returnCodes error -errorCode {CBOR TRUNCATED} -result {CBOR value truncated}
+#>>>
+test cbor_template-2.6.2 {~C: rejects trailing garbage} -body { #<<<
+	set bad [binary decode hex 0100]
+	cbor template {"~C:bad"} [dict create bad $bad]
+} -returnCodes error -errorCode {CBOR TRAILING} -result {Excess bytes after CBOR value}
+#>>>
+test cbor_template-2.7  {~BY: byte string} -body { #<<<
+	set data [binary decode hex DEADBEEF]
+	binary encode hex [cbor get [cbor template {"~BY:data"} [dict create data $data]]]
+} -result deadbeef
+#>>>
+test cbor_template-2.8  {missing var -> null} -body { #<<<
+	cbor get [cbor template {"~S:missing"} {}]
+} -result {}
+#>>>
+test cbor_template-2.9  {variable from scope} -body { #<<<
+	set myvar "from scope"
+	cbor get [cbor template {"~S:myvar"}]
+} -result {from scope}
+#>>>
+test cbor_template-2.10 {object with subst} -body { #<<<
+	cbor get [cbor template {{"name": "~S:n", "age": "~N:a"}} {n Bob a 25}]
+} -result {name Bob age 25}
+#>>>
+# }}}
+
+# cbor template - tag directives {{{
+test cbor_template-3.1  {tag 0 date string} -body { #<<<
+	binary encode hex [cbor template {{"~tag": 0, "~val": "hello"}}]
+} -result c06568656c6c6f
+#>>>
+test cbor_template-3.2  {tag with subst} -body { #<<<
+	set d "2013-03-21T20:04:00Z"
+	cbor tget tags [cbor template {{"~tag": 0, "~val": "~S:d"}}]
+	set tags
+} -result 0
+#>>>
+test cbor_template-3.3  {tag 2 bignum} -body { #<<<
+	set bn [binary decode hex 010000000000000000]
+	set encoded [cbor template {{"~tag": 2, "~val": "~BY:bn"}} [dict create bn $bn]]
+	cbor tget tags $encoded
+	set val [cbor apply_tag 2 [cbor get $encoded]]
+	list $tags $val
+} -result {2 18446744073709551616}
+#>>>
+test cbor_template-3.4  {reversed key order} -body { #<<<
+	binary encode hex [cbor template {{"~val": "hello", "~tag": 0}}]
+} -result c06568656c6c6f
+#>>>
+# }}}
+
+# cbor template - error cases {{{
+test cbor_template-4.1  {invalid JSON} -body {cbor template {not json}} -returnCodes error -result {Invalid JSON value}
+test cbor_template-4.2  {trailing content} -body {cbor template {1 2}} -returnCodes error -result {Trailing content after JSON value}
+test cbor_template-4.3  {unclosed string} -body {cbor template {"hello}} -returnCodes error -result {Unterminated JSON string}
+test cbor_template-4.4  {unclosed array} -body {cbor template "\[1, 2"} -returnCodes error -match glob -result {*JSON*}
+# }}}
+
+# cbor template - adversarial JSON inputs {{{
+# Note: use \xHH escapes for brackets/braces in test inputs to avoid
+# confusing the Tcl parser with mismatched braces in the script source.
+
+# Cross-bracket mismatches: json_skip_value tracks {/} and [/] independently.
+# These must error, not produce corrupt CBOR or crash.
+test cbor_template-5.1  {cross-bracket: array closed with brace} -body { #<<<
+	cbor template "\x5b1, 2\x7d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.2  {cross-bracket: object closed with bracket} -body { #<<<
+	cbor template "\x7b\"a\": 1\x5d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.3  {cross-bracket: nested confusion} -body { #<<<
+	cbor template "\x5b\x7b\"a\": \x5d\x7d\x5d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.4  {mismatched nesting in value} -body { #<<<
+	cbor template "\x7b\"key\": \x5b\x7b\x5d\x7d\x7d"
+} -returnCodes error -match glob -result *
+#>>>
+
+# Deeply nested structures: must hit the depth limit, not crash the stack
+test cbor_template-5.10 {deep array nesting} -body { #<<<
+	set json [string repeat \x5b 300]1[string repeat \x5d 300]
+	cbor template $json
+} -returnCodes error -result {JSON template nesting too deep}
+#>>>
+test cbor_template-5.11 {deep object nesting} -body { #<<<
+	set json ""
+	for {set i 0} {$i < 300} {incr i} {
+		append json "\x7b\"k\":"
+	}
+	append json "1"
+	for {set i 0} {$i < 300} {incr i} {
+		append json \x7d
+	}
+	cbor template $json
+} -returnCodes error -result {JSON template nesting too deep}
+#>>>
+
+# Truncated escape sequences
+test cbor_template-5.20 {truncated \\u escape} -body { #<<<
+	cbor template "\"\\u00\""
+} -returnCodes error -match glob -result {Truncated *u escape in JSON string}
+#>>>
+test cbor_template-5.21 {truncated backslash at end} -body { #<<<
+	cbor template "\"hello\\"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.22 {invalid escape character} -body { #<<<
+	cbor template "\"\\q\""
+} -returnCodes error -match glob -result {Invalid JSON escape*}
+#>>>
+test cbor_template-5.23 {lone high surrogate} -body { #<<<
+	cbor template "\"\\uD800\""
+} -returnCodes error -result {Lone high surrogate in JSON string}
+#>>>
+test cbor_template-5.24 {high surrogate followed by non-surrogate} -body { #<<<
+	cbor template "\"\\uD800\\u0041\""
+} -returnCodes error -result {Invalid low surrogate in JSON string}
+#>>>
+test cbor_template-5.25 {invalid hex in \\u escape} -body { #<<<
+	cbor template "\"\\u00GZ\""
+} -returnCodes error -match glob -result {Invalid hex digit in *u escape}
+#>>>
+
+# Malformed numbers
+test cbor_template-5.30 {leading zero} -body { #<<<
+	cbor template {01}
+} -returnCodes error -result {Leading zeros not permitted in JSON numbers}
+#>>>
+test cbor_template-5.31 {just a minus sign} -body { #<<<
+	cbor template {-}
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.32 {minus with no digits} -body { #<<<
+	cbor template {-a}
+} -returnCodes error -match glob -result *
+#>>>
+
+# Malformed structures
+test cbor_template-5.40 {object missing colon} -body { #<<<
+	cbor template "\x7b\"a\" 1\x7d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.41 {object with non-string key} -body { #<<<
+	cbor template "\x7b 1: 2\x7d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.42 {array with trailing comma only} -body { #<<<
+	cbor template "\x5b,\x5d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.43 {empty input} -body { #<<<
+	cbor template ""
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.44 {whitespace only} -body { #<<<
+	cbor template "   "
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.45 {3-key object is map not tag directive} -body { #<<<
+	cbor template "\x7b\"~tag\": 0, \"~val\": \"x\", \"extra\": 1\x7d"
+	cbor get [cbor template "\x7b\"~tag\": 0, \"~val\": \"x\", \"extra\": 1\x7d"] extra
+} -result 1
+#>>>
+
+# Strings with tricky content for json_skip_value
+test cbor_template-5.50 {string containing braces in object value} -body { #<<<
+	cbor get [cbor template "\x7b\"key\": \"value with \x7d brace\"\x7d"] key
+} -result "value with \x7d brace"
+#>>>
+test cbor_template-5.51 {string containing brackets in array} -body { #<<<
+	lindex [cbor get [cbor template "\x5b\"item with \x5d bracket\"\x5d"]] 0
+} -result "item with \x5d bracket"
+#>>>
+test cbor_template-5.52 {string containing escaped quote in value} -body { #<<<
+	cbor get [cbor template "\x7b\"k\": \"val\\\\\\\"ue\"\x7d"] k
+} -result "val\\\"ue"
+#>>>
+
+# Bare low surrogate
+test cbor_template-5.26 {bare low surrogate} -body { #<<<
+	cbor template "\"\\uDC00\""
+} -returnCodes error -result {Bare low surrogate in JSON string}
+#>>>
+
+# Malformed number edge cases
+test cbor_template-5.33 {trailing decimal point} -body { #<<<
+	cbor template {1.}
+} -returnCodes error -result {Invalid JSON number: digit required after decimal point}
+#>>>
+test cbor_template-5.34 {exponent with no digits} -body { #<<<
+	cbor template {1e}
+} -returnCodes error -result {Invalid JSON number: digit required in exponent}
+#>>>
+test cbor_template-5.35 {exponent sign with no digits} -body { #<<<
+	cbor template {1e+}
+} -returnCodes error -result {Invalid JSON number: digit required in exponent}
+#>>>
+test cbor_template-5.36 {negative leading zero} -body { #<<<
+	cbor template {-01}
+} -returnCodes error -result {Leading zeros not permitted in JSON numbers}
+#>>>
+test cbor_template-5.37 {negative zero encodes as integer 0} -body { #<<<
+	binary encode hex [cbor template {-0}]
+} -result 00
+#>>>
+test cbor_template-5.38 {negative zero float} -body { #<<<
+	binary encode hex [cbor template {-0.0}]
+} -result f98000
+#>>>
+
+# Trailing commas (accepted as leniency, output must still be well-formed)
+test cbor_template-5.46 {trailing comma in array} -body { #<<<
+	cbor get [cbor template "\x5b1, 2,\x5d"]
+} -result {1 2}
+#>>>
+test cbor_template-5.47 {trailing comma in object} -body { #<<<
+	cbor get [cbor template "\x7b\"a\": 1,\x7d"] a
+} -result 1
+#>>>
+
+# Tag directive edge cases
+test cbor_template-5.48 {tag with float tag number} -body { #<<<
+	cbor template "\x7b\"~tag\": 1.5, \"~val\": 1\x7d"
+} -returnCodes error -match glob -result *
+#>>>
+test cbor_template-5.49 {tag with negative tag number} -body { #<<<
+	cbor template "\x7b\"~tag\": -1, \"~val\": 1\x7d"
+} -returnCodes error -result {Tag number must be non-negative}
+#>>>
+
+# Nesting depth at exactly the limit should work
+test cbor_template-5.60 {nesting at depth limit - 1} -body { #<<<
+	set json [string repeat \x5b 255]1[string repeat \x5d 255]
+	string is true [cbor wellformed [cbor template $json]]
+} -result 1
+#>>>
+
+# }}}
+
+# cbor template - key-position substitution markers {{{
+test cbor_template-6.1  {integer key via ~N:} -body { #<<<
+	set cbor [cbor template "\x7b\"~N:k\": \"~N:v\"\x7d" {k 1 v -7}]
+	cbor get $cbor 1
+} -result -7
+#>>>
+test cbor_template-6.2  {multiple integer keys (COSE-style)} -body { #<<<
+	set cbor [cbor template "\x7b\"~N:a\": \"~N:av\", \"~N:b\": \"~N:bv\"\x7d" {a 1 av -7 b 3 bv -35}]
+	list [cbor get $cbor 1] [cbor get $cbor 3]
+} -result {-7 -35}
+#>>>
+test cbor_template-6.3  {byte string key via ~BY:} -body { #<<<
+	set kid [binary decode hex CAFE]
+	set cbor [cbor template "\x7b\"~BY:k\": \"~S:v\"\x7d" [dict create k $kid v hello]]
+	cbor wellformed $cbor
+} -result 1
+#>>>
+test cbor_template-6.4  {CBOR fragment key via ~C:} -body { #<<<
+	set k [cbor encode int 42]
+	set cbor [cbor template "\x7b\"~C:k\": \"~S:v\"\x7d" [dict create k $k v hello]]
+	cbor get $cbor 42
+} -result hello
+#>>>
+test cbor_template-6.5  {mixed plain and substituted keys} -body { #<<<
+	set cbor [cbor template "\x7b\"~N:ik\": \"~N:iv\", \"plain\": \"~S:sv\"\x7d" {ik 1 iv 99 sv hello}]
+	list [cbor get $cbor 1] [cbor get $cbor plain]
+} -result {99 hello}
+#>>>
+test cbor_template-6.6  {literal key via ~L:} -body { #<<<
+	set cbor [cbor template "\x7b\"~L:~tricky\": 1\x7d"]
+	cbor get $cbor ~tricky
+} -result 1
+#>>>
+# }}}
+
+}
+# Local Variables:
+# mode: tcl
+# tab-width: 4
+# End:
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4

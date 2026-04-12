@@ -1,0 +1,208 @@
+if {"bench" ni [info commands bench]} {
+	package require bench
+	namespace import bench::*
+}
+
+package require cbor
+
+proc main {} {
+	# Decode: integers <<<
+	bench decode-1.1 {Decode integer (small)} -batch auto -setup { #<<<
+		set data [binary decode hex 182a]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result 42
+	#>>>
+	bench decode-1.2 {Decode integer (64-bit)} -batch auto -setup { #<<<
+		set data [binary decode hex 1b000000e8d4a51000]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result 1000000000000
+	#>>>
+	#>>>
+	# Decode: strings <<<
+	bench decode-2.1 {Decode short string} -batch auto -setup { #<<<
+		set data [binary decode hex 6449455446]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result IETF
+	#>>>
+	bench decode-2.2 {Decode 1KB string} -batch auto -setup { #<<<
+		set str [string repeat x 1024]
+		set data [cbor encode string $str]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain str data
+	} -result [string repeat x 1024]
+	#>>>
+	#>>>
+	# Decode: arrays <<<
+	bench decode-3.1 {Decode small array} -batch auto -setup { #<<<
+		set data [binary decode hex 83010203]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result {1 2 3}
+	#>>>
+	bench decode-3.2 {Decode 100-element array} -batch auto -setup { #<<<
+		set items [lmap i [lseq 0 99] {cbor encode int $i}]
+		set data [cbor encode array $items]
+		set expected [cbor get $data]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain items data expected
+	} -result [lseq 0 99]
+	#>>>
+	#>>>
+	# Decode: maps <<<
+	bench decode-4.1 {Decode small map} -batch auto -setup { #<<<
+		set data [cbor template {{"a": 1, "b": 2, "c": 3}}]
+	} -compare {
+		cbor	{cbor get $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result {a 1 b 2 c 3}
+	#>>>
+	#>>>
+	# Decode: path navigation <<<
+	bench decode-5.1 {Navigate into nested map} -batch auto -setup { #<<<
+		set data [cbor template {{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}}]
+	} -compare {
+		cbor	{cbor get $data users 1 name}
+	} -cleanup {
+		unset -nocomplain data
+	} -result Bob
+	#>>>
+	#>>>
+	# Encode: cbor encode primitives <<<
+	bench encode-1.1 {Encode integer (small)} -batch auto -setup { #<<<
+		set expected [binary decode hex 182a]
+	} -compare {
+		cbor	{cbor encode int 42}
+	} -cleanup {
+		unset -nocomplain expected
+	} -result [binary decode hex 182a]
+	#>>>
+	bench encode-1.2 {Encode integer (64-bit)} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor encode int 1000000000000}
+	} -result [binary decode hex 1b000000e8d4a51000]
+	#>>>
+	bench encode-2.1 {Encode short string} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor encode string IETF}
+	} -result [binary decode hex 6449455446]
+	#>>>
+	bench encode-2.2 {Encode 1KB string} -batch auto -setup { #<<<
+		set str [string repeat x 1024]
+		set expected [cbor encode string $str]
+	} -compare {
+		cbor	{cbor encode string $str}
+	} -cleanup {
+		unset -nocomplain str expected
+	} -result [cbor encode string [string repeat x 1024]]
+	#>>>
+	bench encode-3.1 {Encode float (half)} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor encode float 1.0}
+	} -result [binary decode hex f93c00]
+	#>>>
+	bench encode-3.2 {Encode float (double)} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor encode float 3.14}
+	} -result [binary decode hex fb40091eb851eb851f]
+	#>>>
+	bench encode-4.1 {Encode array (3 elements)} -batch auto -setup { #<<<
+		set items [list [cbor encode int 1] [cbor encode int 2] [cbor encode int 3]]
+	} -compare {
+		cbor	{cbor encode array $items}
+	} -cleanup {
+		unset -nocomplain items
+	} -result [binary decode hex 83010203]
+	#>>>
+	#>>>
+	# Encode: cbor template <<<
+	bench template-1.1 {Template: small static object} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor template {{"a": 1, "b": "hello", "c": true}}}
+	} -result [cbor template {{"a": 1, "b": "hello", "c": true}}]
+	#>>>
+	bench template-1.2 {Template: array of numbers} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor template {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}}
+	} -result [binary decode hex 8a0102030405060708090a]
+	#>>>
+	bench template-2.1 {Template: string substitution} -batch auto -setup { #<<<
+		set dict [dict create name Alice age 30 active yes]
+	} -compare {
+		cbor	{cbor template {{"name": "~S:name", "age": "~N:age", "active": "~B:active"}} $dict}
+	} -cleanup {
+		unset -nocomplain dict
+	} -result [cbor template {{"name": "~S:name", "age": "~N:age", "active": "~B:active"}} {name Alice age 30 active yes}]
+	#>>>
+	bench template-2.2 {Template: nested with substitution} -batch auto -setup { #<<<
+		set dict [dict create method ping id 42]
+	} -compare {
+		cbor	{cbor template {{"method": "~S:method", "id": "~N:id", "params": [1, 2, 3]}} $dict}
+	} -cleanup {
+		unset -nocomplain dict
+	} -result [cbor template {{"method": "~S:method", "id": "~N:id", "params": [1, 2, 3]}} {method ping id 42}]
+	#>>>
+	bench template-3.1 {Template: CBOR fragment interpolation} -batch auto -setup { #<<<
+		set frag [cbor template {[1, 2, 3]}]
+		set dict [dict create payload $frag]
+	} -compare {
+		cbor	{cbor template {{"type": "data", "payload": "~C:payload"}} $dict}
+	} -cleanup {
+		unset -nocomplain frag dict
+	} -result [cbor template {{"type": "data", "payload": "~C:payload"}} [dict create payload [cbor template {[1, 2, 3]}]]]
+	#>>>
+	bench template-4.1 {Template: tag directive} -batch auto -setup { #<<<
+	} -compare {
+		cbor	{cbor template {{"~tag": 0, "~val": "2024-01-15T10:30:00Z"}}}
+	} -result [cbor template {{"~tag": 0, "~val": "2024-01-15T10:30:00Z"}}]
+	#>>>
+	#>>>
+	# Wellformed validation <<<
+	bench wellformed-1.1 {Validate small CBOR} -batch auto -setup { #<<<
+		set data [cbor template {{"a": 1, "b": [2, 3], "c": "hello"}}]
+	} -compare {
+		cbor	{cbor wellformed $data}
+	} -cleanup {
+		unset -nocomplain data
+	} -result 1
+	#>>>
+	bench wellformed-1.2 {Validate 100-element array} -batch auto -setup { #<<<
+		set items [lmap i [lseq 0 99] {cbor encode int $i}]
+		set data [cbor encode array $items]
+	} -compare {
+		cbor	{cbor wellformed $data}
+	} -cleanup {
+		unset -nocomplain items data
+	} -result 1
+	#>>>
+	#>>>
+	# Round-trip <<<
+	bench roundtrip-1.1 {Encode + decode small object} -batch auto -setup { #<<<
+		set dict [dict create name Alice age 30]
+	} -compare {
+		cbor	{cbor get [cbor template {{"name": "~S:name", "age": "~N:age"}} $dict]}
+	} -cleanup {
+		unset -nocomplain dict
+	} -result {name Alice age 30}
+	#>>>
+	#>>>
+}
+
+main
+
+# vim: ft=tcl foldmethod=marker foldmarker=<<<,>>> ts=4 shiftwidth=4
