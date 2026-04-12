@@ -1175,7 +1175,7 @@ static int diag_item(Tcl_Interp* interp, const uint8_t** pPtr, const uint8_t* e,
 		//}}}
 		case M_REAL: { //{{{
 			if (ai < 20) {
-				char buf[16];
+				char buf[32];
 				snprintf(buf, sizeof(buf), "simple(%" PRIu64 ")", val);
 				Tcl_DStringAppend(ds, buf, -1);
 			} else switch (ai) {
@@ -1184,7 +1184,7 @@ static int diag_item(Tcl_Interp* interp, const uint8_t** pPtr, const uint8_t* e,
 				case 22: Tcl_DStringAppend(ds, "null", 4); break;
 				case 23: Tcl_DStringAppend(ds, "undefined", 9); break;
 				case 24: {
-					char buf[16];
+					char buf[32];
 					snprintf(buf, sizeof(buf), "simple(%" PRIu64 ")", val);
 					Tcl_DStringAppend(ds, buf, -1);
 					break;
