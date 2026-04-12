@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <endian.h>
+#include "compat_endian.h"
 
 #include <tclstuff.h>
 #include <tclTomMath.h>
