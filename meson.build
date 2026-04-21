@@ -14,6 +14,7 @@ pkg_sources = []
 conf = configuration_data()
 
 tea_want_tommath = true
+tea_want_defer   = true
 
 deps = []
 inc = [include_directories('.')]
@@ -22,33 +23,6 @@ subdir('teabase/init')
 
 if tclver_major.to_int() < 9
   error('This extension requires Tcl 9 or later (found: ' + tclver + ')')
-endif
-
-defer_test = '''
-  int main(void) {
-    int x = 0;
-    _Defer { x = 1; }
-    return x;
-  }
-'''
-
-if cc.compiles(defer_test, name: 'native _Defer')
-  conf.set10('HAVE_NATIVE_DEFER', true)
-elif cc.compiles(defer_test, args: ['-fdefer-ts'], name: 'native _Defer (-fdefer-ts)')
-  conf.set10('HAVE_NATIVE_DEFER', true)
-  add_project_arguments('-fdefer-ts', language: 'c')
-elif cc.compiles('''
-  void cleanup(int *p) { (void)p; }
-  int main(void) {
-    __attribute__((__cleanup__(cleanup))) int x;
-    auto void f(int*);
-    inline auto void f(__attribute__((__unused__)) int *p) {}
-    return 0;
-  }
-''', name: 'GCC defer polyfill support')
-  conf.set10('HAVE_DEFER_POLYFILL', true)
-else
-  error('No defer support: need _Defer (clang 22+ with -fdefer-ts) or GCC 9+ nested functions')
 endif
 
 if tcl_has_internal_tommath
