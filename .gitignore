@@ -9,3 +9,5 @@ subprojects/hedley-*
 subprojects/tcl
 subprojects/packagecache
 subprojects/.wraplock
+.cache/
+bench/last
