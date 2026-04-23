@@ -1,5 +1,5 @@
 project('cbor', 'c',
-  version:            '1.0',
+  version:            '1.1',
   default_options:    ['c_std=gnu2y,gnu23,gnu2x', 'warning_level=3', 'werror=true'],
   meson_version:      '>=1.3.0',
 )

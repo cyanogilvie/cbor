@@ -1,9 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 
-#if HAVE_CONFIG_H
 #include <config.h>
-#endif
 
 #include <tcl.h>
 #include <stdint.h>
@@ -12,14 +10,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "compat_endian.h"
+#include <compat_endian.h>
 
 #include <tclstuff.h>
 #include <tclTomMath.h>
 #include <bignum_ops.h>
-#if HAVE_DEFER_POLYFILL
 #include <defer.h>
-#endif
 
 #include "cbor_encode.h"
 

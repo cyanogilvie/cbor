@@ -11,9 +11,7 @@
 #include <config.h>
 #endif
 
-#if HAVE_DEFER_POLYFILL
 #include <defer.h>
-#endif
 
 #include <tommath.h>
 #include <limits.h>

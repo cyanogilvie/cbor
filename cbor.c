@@ -17,9 +17,7 @@
 #include <tclstuff.h>
 #include <tclTomMath.h>
 #include <bignum_ops.h>
-#if HAVE_DEFER_POLYFILL
 #include <defer.h>
-#endif
 
 #include "cbor_encode.h"
 
@@ -594,7 +592,7 @@ static int cbor_match_map(Tcl_Interp* interp, uint8_t ai, uint64_t val, const ui
 			{
 				// Defer dealing with these until there is nothing else that could cause a mismatch
 				Tcl_HashEntry*	he = NULL;
-				Tcl_CreateHashEntry(&remaining, i, NULL);
+				he = Tcl_CreateHashEntry(&remaining, i, NULL);
 				Tcl_SetHashValue(he, (void*)p);
 				TEST_OK(well_formed(interp, &p, e, 0, NULL));
 				break;
@@ -742,7 +740,7 @@ data_item: // loop: read off tags
 					const uint8_t		chunk_ib = *p++;
 					const enum cbor_mt	chunk_mt = chunk_ib >> 5;
 					const uint8_t		chunk_ai = chunk_ib & 0x1f;
-					uint64_t			chunk_val = ai;
+					uint64_t			chunk_val = chunk_ai;
 
 					if (chunk_ib == 0xFF) break;
 					if (chunk_mt != M_BSTR) CBOR_INVALID("wrong type for binary chunk: %d", chunk_mt);
@@ -763,14 +761,20 @@ data_item: // loop: read off tags
 					} else {
 						for (; pathval < pathend && p < chunk_pe;) {
 							if (*pathval++ != *p++) {
-								p = pe;
+								p = chunk_pe;
 								skipping = 1;
 								break;
 							}
 						}
+						// Path exhausted mid-chunk but chunk still has bytes → mismatch.
+						// Must continue consuming chunks so p ends past the 0xff break.
+						if (!skipping && pathval == pathend && p < chunk_pe) {
+							p = chunk_pe;
+							skipping = 1;
+						}
 					}
 				}
-				*matchesPtr = (!skipping && (pathval == pathend && p == pe));
+				*matchesPtr = (!skipping && pathval == pathend);
 				return TCL_OK;
 				//}}}
 			} else { // Definite length bytes {{{
@@ -803,7 +807,7 @@ data_item: // loop: read off tags
 					const uint8_t		chunk_ib = *p++;
 					const enum cbor_mt	chunk_mt = chunk_ib >> 5;
 					const uint8_t		chunk_ai = chunk_ib & 0x1f;
-					uint64_t			chunk_val = ai;
+					uint64_t			chunk_val = chunk_ai;
 
 					if (chunk_ib == 0xFF) break;
 					if (chunk_mt != M_UTF8) CBOR_INVALID("wrong type for UTF-8 chunk: %d", chunk_mt);
@@ -834,9 +838,13 @@ data_item: // loop: read off tags
 								break;
 							}
 						}
+						if (!skipping && s_pathval == s_pathend && p < c_pe) {
+							p = c_pe;
+							skipping = 1;
+						}
 					}
 				}
-				*matchesPtr = (!skipping && (s_pathval == s_pathend && p == s_pe));
+				*matchesPtr = (!skipping && s_pathval == s_pathend);
 				return TCL_OK;
 				//}}}
 			} else { // Definite length UTF-8 string {{{
@@ -1341,29 +1349,29 @@ int CBOR_GetDataItemFromPath(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* path
 				const size_t	absofs = ofs < 0 ? ofs*-1 : ofs;
 				if (mode == IDX_ENDREL) { //{{{
 					if (ai == 31) { // end-x, indefinite length array {{{
-						int		elem_mt;
-
-						// Skip absofs elements
-						for (size_t i=0; i<absofs; i++) {
-							TEST_OK(well_formed(interp, &p, e, 1, &elem_mt));
-							if (elem_mt == -1) goto not_found;	// Index before start: reached end of indefinite array before skipping enough
-						}
-
-						// Start recording the offsets so that when we reach the end we can look back ofs elements
+						// Record the last absofs+1 element positions in a circular
+						// buffer. On break, the "oldest" entry (slot `head`, next
+						// to be overwritten) is the target — element N-1-absofs.
+						const size_t	slots = absofs + 1;
 						if (circular != circular_buf) {
 							ckfree(circular);
 							circular = circular_buf;
 						}
-						if (absofs > CIRCULAR_STATIC_SLOTS) circular = ckalloc(absofs * sizeof(uint8_t*));
-						for (ssize_t c=0; ; c = (c+1)%absofs) {
-							circular[c] = p;
-							TEST_OK(well_formed_indefinite(interp, &p, e, 1, &elem_mt, mt));
-							if (elem_mt == -1) {
-								// Found the end: c-1 is the index of the last element, circular[(c-1+ofs)%absofs] is the indexed element
-								p = circular[((c-1+ofs)%absofs + absofs)%absofs];
-								break;
-							}
+						if (slots > CIRCULAR_STATIC_SLOTS) circular = ckalloc(slots * sizeof(uint8_t*));
+						memset(circular, 0, slots * sizeof(uint8_t*));
+
+						size_t	head = 0, count = 0;
+						for (;;) {
+							const uint8_t*	elem_p = p;
+							int				elem_mt;
+							TEST_OK(well_formed(interp, &p, e, 1, &elem_mt));
+							if (elem_mt == -1) break;
+							circular[head] = elem_p;
+							head = (head + 1) % slots;
+							if (count < slots) count++;
 						}
+						if (count < slots) goto not_found;	// Array had fewer than absofs+1 elements
+						p = circular[head];
 						//}}}
 					} else { // end-x, known length array {{{
 						if ((int64_t)val-1 - ofs < 0) goto not_found;	// Index before start
@@ -1379,7 +1387,7 @@ int CBOR_GetDataItemFromPath(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* path
 						for (ssize_t i=0; i<ofs+1; i++) { // Need to visit the referenced elem to be sure it isn't the break symbol (end of array)
 							int	elem_mt;
 							last_p = p;
-							TEST_OK(well_formed_indefinite(interp, &p, e, 1, &elem_mt, mt));
+							TEST_OK(well_formed(interp, &p, e, 1, &elem_mt));
 							if (elem_mt == -1) goto not_found;	// Index beyond end
 						}
 						p = last_p;

@@ -4,7 +4,7 @@ cbor - CBOR encoder/decoder for Tcl
 
 ## SYNOPSIS
 
-**package require cbor** ?1.0?
+**package require cbor** ?1.1?
 
 **cbor** **get** *cbor* ?*key* …?  
 **cbor** **tget** *tagsvar* *cbor* ?*key* …?  
@@ -383,9 +383,9 @@ wrap file.
 ### From a Release Tarball
 
 ``` sh
-wget https://github.com/cyanogilvie/cbor/releases/download/v1.0/cbor-v1.0.tar.gz
-tar xf cbor-v1.0.tar.gz
-cd cbor-v1.0
+wget https://github.com/cyanogilvie/cbor/releases/download/v1.1/cbor-v1.1.tar.gz
+tar xf cbor-v1.1.tar.gz
+cd cbor-v1.1
 meson setup builddir --buildtype=release
 meson install -C builddir
 ```
@@ -410,7 +410,7 @@ PKG_CONFIG_PATH=/path/to/tcl9/lib/pkgconfig meson setup builddir --buildtype=rel
 
 ``` dockerfile
 WORKDIR /tmp/cbor
-RUN wget https://github.com/cyanogilvie/cbor/releases/download/v1.0/cbor-v1.0.tar.gz -O - | tar xz --strip-components=1 && \
+RUN wget https://github.com/cyanogilvie/cbor/releases/download/v1.1/cbor-v1.1.tar.gz -O - | tar xz --strip-components=1 && \
     meson setup builddir --buildtype=release && \
     meson install -C builddir && \
     strip /usr/local/lib/libcbor*.so && \

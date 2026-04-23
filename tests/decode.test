@@ -330,6 +330,99 @@ test cbor_x-1.1 {} -body {
 	cbor get [binary decode hex a50102032620012158200c97105f543c7c224e48dd3c0e1d1da2cc64ec368ef4b8eb9ef4d7f266200caa2258204321bef06fbbdad4d3b0e9ccdc81bc6063c1985cba48a73a14e76360063924f3] 3
 } -result -7
 
+# Indefinite-length array indexing: 9f 01 02 03 04 05 ff = [1,2,3,4,5]
+test cbor_get-3.1 {indef-len array absolute index 0} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] 0
+} -result 1
+#>>>
+test cbor_get-3.2 {indef-len array absolute index middle} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] 2
+} -result 3
+#>>>
+test cbor_get-3.3 {indef-len array absolute index last} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] 4
+} -result 5
+#>>>
+test cbor_get-3.4 {indef-len array absolute index beyond end} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] 5
+} -returnCodes error -errorCode {CBOR NOTFOUND 5} -result "path not found"
+#>>>
+test cbor_get-3.5 {indef-len array end-0 (last)} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] end-0
+} -result 5
+#>>>
+test cbor_get-3.6 {indef-len array end-1 (second to last)} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] end-1
+} -result 4
+#>>>
+test cbor_get-3.7 {indef-len array end-4 (first)} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] end-4
+} -result 1
+#>>>
+test cbor_get-3.8 {indef-len array end-5 (before start)} -body { #<<<
+	cbor get [binary decode hex 9f0102030405ff] end-5
+} -returnCodes error -errorCode {CBOR NOTFOUND end-5} -result "path not found"
+#>>>
+test cbor_get-3.9 {indef-len array end-0 on single-element array} -body { #<<<
+	cbor get [binary decode hex 9f01ff] end-0
+} -result 1
+#>>>
+test cbor_get-3.10 {indef-len array end-0 on empty array} -body { #<<<
+	cbor get [binary decode hex 9fff] end-0
+} -returnCodes error -errorCode {CBOR NOTFOUND end-0} -result "path not found"
+#>>>
+
+# Indefinite-length byte string map key matching
+# Map: {_ indef("hello"): "greet"}
+# a1                  map(1)
+#   5f 43 68656c 42 6c6f ff     indef bstr "hel" "lo" = "hello"
+#   65 6772656574               utf8(5) "greet"
+test cbor_match-2.1 {match against indef-len bstr key} -body { #<<<
+	cbor get [binary decode hex a15f4368656c426c6fff656772656574] [binary decode hex 68656c6c6f]
+} -result greet
+#>>>
+test cbor_match-2.2 {mismatch against indef-len bstr key (longer path)} -body { #<<<
+	cbor get [binary decode hex a15f4368656c426c6fff656772656574] [binary decode hex 68656c6c6f00]
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+test cbor_match-2.3 {mismatch against indef-len bstr key (shorter path)} -body { #<<<
+	cbor get [binary decode hex a15f4368656c426c6fff656772656574] [binary decode hex 68656c6c]
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+test cbor_match-2.4 {mismatch against indef-len bstr key (different bytes)} -body { #<<<
+	cbor get [binary decode hex a15f4368656c426c6fff656772656574] [binary decode hex 68656c6c78]
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+
+# Indefinite-length UTF-8 string map key matching.
+# Map: {_ indef("hello"): "greet"}
+# a1                         map(1)
+#   7f 63 68656c 62 6c6f ff   indef utf8 "hel" "lo" = "hello"
+#   65 6772656574             utf8(5) "greet"
+test cbor_match-3.1 {match against indef-len utf8 key} -body { #<<<
+	cbor get [binary decode hex a17f6368656c626c6fff656772656574] hello
+} -result greet
+#>>>
+test cbor_match-3.2 {mismatch against indef-len utf8 key (longer path)} -body { #<<<
+	cbor get [binary decode hex a17f6368656c626c6fff656772656574] hellox
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+test cbor_match-3.3 {mismatch against indef-len utf8 key (shorter path)} -body { #<<<
+	cbor get [binary decode hex a17f6368656c626c6fff656772656574] hell
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+test cbor_match-3.4 {mismatch against indef-len utf8 key (different codepoint)} -body { #<<<
+	cbor get [binary decode hex a17f6368656c626c6fff656772656574] hellx
+} -returnCodes error -errorCode {CBOR NOTFOUND *} -match glob -result "path not found"
+#>>>
+# Multi-byte UTF-8 codepoint ('ä' = c3 a4) in an indef-len utf8 key.
+# Map: {_ indef("äbc"): "v"}
+#   a1 7f 62 c3a4 62 6263 ff 61 76
+test cbor_match-3.5 {match against indef-len utf8 key with multi-byte codepoint} -body { #<<<
+	cbor get [binary decode hex a17f62c3a4626263ff6176] "äbc"
+} -result v
+#>>>
+
 test cbor_apply_tag-1.1 {tag: bignum}			-body {cbor apply_tag 2 \1\0\0\0\0\0\0\0\0} -result 18446744073709551616
 test cbor_apply_tag-1.2 {tag: negative bignum}	-body {cbor apply_tag 3 \1\0\0\0\0\0\0\0\0} -result -18446744073709551617
 
