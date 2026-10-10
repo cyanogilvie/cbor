@@ -1,6 +1,6 @@
 ---
 name: encoding-decoding-cbor
-description: Encode and decode CBOR (RFC 8949) in Tcl using the cbor package. Provides JSON-based templates for encoding, low-level encode primitives, and path-based decoding. Use when working with CBOR binary data, building CBOR documents, or when the user mentions cbor commands or CBOR encoding/decoding.
+description: Encode and decode CBOR (RFC 8949) in Tcl using the cbor package. Provides JSON-based templates for encoding, low-level encode primitives, and path-based decoding, plus a C API (stubs table) for extensions and jitc code. Use when working with CBOR binary data, building CBOR documents, when the user mentions cbor commands or CBOR encoding/decoding, or when writing C (an extension or a jitc cdef) that reads or writes CBOR via cbor.h / CBOR_* functions.
 ---
 
 ## Loading
@@ -71,6 +71,7 @@ In JSON string values (both keys and values), `~X:varname` triggers substitution
 | `~BY:var` | byte string | for binary data |
 | `~L:text` | literal string | no variable lookup; text after prefix is the value |
 | `~T:var` | recursive template | value is JSON, processed with same dict |
+| `~J:var` | JSON value | value is JSON (e.g. rl_json), encoded per RFC 8949 §6.2 as if it were template literals; markers / tag directives inside are **not** interpreted, strings never become byte strings |
 
 ### Non-String Map Keys
 
@@ -150,3 +151,56 @@ cbor encode tag 0 [cbor encode string 2024-01-15T10:30:00Z]
 | `CBOR INVALID` | Syntax error |
 | `CBOR TRAILING` | Extra bytes after data item |
 | `CBOR NOTFOUND` | Path key not found |
+
+## C API (cbor.h)
+
+Exported through a stubs table. In a meson extension: `dependency('cbor')`
+(gives the include path, `libcborstub.a` and `-DUSE_CBOR_STUBS=1`), then in
+the init function, after `Tcl_InitStubs`:
+
+```c
+#include <cbor.h>
+if (Cbor_InitStubs(interp) == NULL) return TCL_ERROR;
+```
+
+From jitc, link directly with `package {cbor 1.2}` in the cdef (driven by
+`cbor::pkgconfig`; jitc can't link the static stub library).
+
+Conventions:
+- `int` functions return `TCL_OK` / `TCL_ERROR`, replacing the interp result
+  on error (same `-errorcode`s as the script commands).
+- `Tcl_Obj**` results use `replace_tclobj` semantics: initialise the variable
+  to NULL; it ends up holding a reference the caller must release.
+- Decoders take `p` (item start) and `e` (one past the end of the buffer) and
+  never read past `e`; `pPtr` variants advance the pointer.
+
+Decoding:
+
+| Function | Purpose |
+|----------|---------|
+| `CBOR_ReadHead(interp, &p, e, &head)` | Decode one head into `CBOR_Head` {`mt`, `ai`, `val`, `indefinite`, `isbreak`, `fval`}; advances past the head only (a definite string's `val` payload bytes follow) |
+| `CBOR_Length(interp, p, e, &len)` | Byte length of the item at `p` (tags included): skip an item |
+| `CBOR_DecodeValue(interp, &p, e, &res, &tags)` | Decode one item to a Tcl value (`tags` may be NULL); advances |
+| `CBOR_Get(interp, cborObj, pathObj, &res, &tags)` | `cbor get` / `cbor tget`; `CBOR NOTFOUND` if missing |
+| `CBOR_Extract(interp, cborObj, pathObj, &res)` | `cbor extract` (raw bytes) |
+| `CBOR_GetDataItemFromPath(interp, cborObj, pathObj, &item, &e, tagsDS)` | Locate an item without decoding (`item` NULL if absent) |
+| `CBOR_WellFormed`, `CBOR_Pretty`, `CBOR_ApplyTag` | As the script commands |
+
+Encoding: `CBOR_Template(interp, tmpl, dictOrNULL, &res)`, or build item by
+item into a stack `CBOR_Buf`:
+
+```c
+CBOR_Buf b;
+CBOR_BufInit(&b);
+CBOR_EmitHead(&b, CBOR_MT_MAP, 2);              /* also UINT, NINT (-1-val), TAG, ARRAY */
+CBOR_EmitText(&b, "data", 4);  CBOR_EmitBytes(&b, bytes, len);
+CBOR_EmitText(&b, "when", 4);  CBOR_EmitHead(&b, CBOR_MT_TAG, 1); CBOR_EmitFloat(&b, epoch);
+Tcl_SetObjResult(interp, CBOR_BufResult(&b));   /* owned by b: ref it before freeing */
+CBOR_BufFree(&b);                               /* always, including on error paths */
+```
+
+Other emitters: `CBOR_EmitWideInt`, `CBOR_EmitNumber` (Tcl number incl.
+bignums, like `~N:`), `CBOR_EmitBool`, `CBOR_EmitNull`, `CBOR_EmitUndefined`,
+`CBOR_EmitSimple`, `CBOR_EmitIndefinite` + `CBOR_EmitBreak`, `CBOR_EmitRaw`
+(pre-encoded, unvalidated). Container heads are explicit: the caller must emit
+exactly the declared number of items / pairs.

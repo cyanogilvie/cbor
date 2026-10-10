@@ -325,6 +325,98 @@ test cbor_template-6.6  {literal key via ~L:} -body { #<<<
 #>>>
 # }}}
 
+# cbor template - ~J: JSON values (RFC 8949 section 6.2) {{{
+test cbor_template-7.1  {~J: object, array and literals} -body { #<<<
+	set cbor [cbor template {{"x": "~J:j"}} {j {{"a": [true, false, null, "s"], "b": {}}}}]
+	cbor pretty $cbor
+} -cleanup {
+	unset -nocomplain cbor
+} -result {{
+  "x": {
+    "a": [
+      true,
+      false,
+      null,
+      "s"
+    ],
+    "b": {}
+  }
+}}
+#>>>
+test cbor_template-7.2  {~J: numbers follow their JSON form} -body { #<<<
+	binary encode hex [cbor template {"~J:j"} {j {[1, -1, 1.0, 1e3, -0, -0.0, 1.5]}}]
+} -result 870120f93c00f963d000f98000f93e00
+#>>>
+test cbor_template-7.3  {~J: integers beyond 64 bits become bignums} -body { #<<<
+	set cbor [cbor template {"~J:j"} {j {[18446744073709551616, -18446744073709551617]}}]
+	set pos	[cbor tget postags $cbor 0]
+	set neg	[cbor tget negtags $cbor 1]
+	list [cbor apply_tag $postags $pos] [cbor apply_tag $negtags $neg] [binary encode hex $cbor]
+} -cleanup {
+	unset -nocomplain cbor pos postags neg negtags
+} -result {18446744073709551616 -18446744073709551617 82c249010000000000000000c349010000000000000000}
+#>>>
+test cbor_template-7.4  {~J: marker-like strings are plain text} -body { #<<<
+	set cbor [cbor template {"~J:j"} {j {{"~S:k": "~S:v", "l": ["~N:n", "~BY:b", "~T:t", "~J:j"]}} k K v V n 1}]
+	list [cbor get $cbor ~S:k] [cbor get $cbor l]
+} -cleanup {
+	unset -nocomplain cbor
+} -result {~S:v {~N:n ~BY:b ~T:t ~J:j}}
+#>>>
+test cbor_template-7.5  {~J: tag directive shaped objects are plain maps} -body { #<<<
+	cbor pretty [cbor template {"~J:j"} {j {{"~tag": 1, "~val": 2}}}]
+} -result {{
+  "~tag": 1,
+  "~val": 2
+}}
+#>>>
+test cbor_template-7.6  {~J: string escapes} -body { #<<<
+	cbor get [cbor template {"~J:j"} [list j {"a\"b\\cé😀\n"}]]
+} -result "a\"b\\cé\U1f600\n"
+#>>>
+test cbor_template-7.7  {~J: missing variable is null} -body { #<<<
+	binary encode hex [cbor template {["~J:nonesuch"]} {}]
+} -result 81f6
+#>>>
+test cbor_template-7.8  {~J: in key position} -body { #<<<
+	cbor pretty [cbor template {{"~J:k": 1}} {k 42}]
+} -result {{
+  42: 1
+}}
+#>>>
+test cbor_template-7.9  {~J: from a variable in the caller's scope} -body { #<<<
+	set doc {{"n": 1}}
+	cbor pretty [cbor template {["~J:doc"]}]
+} -cleanup {
+	unset -nocomplain doc
+} -result {[
+  {
+    "n": 1
+  }
+]}
+#>>>
+test cbor_template-7.10 {~J: trailing content is an error} -body { #<<<
+	cbor template {"~J:j"} {j {{"a": 1} {"b": 2}}}
+} -returnCodes error -result {Trailing content after JSON value in ~J:j}
+#>>>
+test cbor_template-7.11 {~J: empty value is an error} -body { #<<<
+	cbor template {"~J:j"} {j {  }}
+} -returnCodes error -result {Unexpected end of JSON}
+#>>>
+test cbor_template-7.12 {~J: invalid JSON is an error} -body { #<<<
+	cbor template {"~J:j"} {j {[01]}}
+} -returnCodes error -result {Leading zeros not permitted in JSON numbers}
+#>>>
+test cbor_template-7.13 {~J: whitespace around the value is allowed} -body { #<<<
+	binary encode hex [cbor template {"~J:j"} [list j "\n\t \[1\] \n"]]
+} -result 8101
+#>>>
+test cbor_template-7.14 {~J: nesting depth limit} -body { #<<<
+	cbor template {"~J:j"} [list j [string repeat {[} 300][string repeat {]} 300]]
+} -returnCodes error -result {JSON template nesting too deep}
+#>>>
+# }}}
+
 }
 # Local Variables:
 # mode: tcl

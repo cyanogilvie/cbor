@@ -20,6 +20,8 @@
 #include <defer.h>
 
 #include "cbor_encode.h"
+#include <cbor.h>
+#include <register_config.h>
 
 enum svalue_types {
 	S_FALSE = 20,
@@ -1289,7 +1291,7 @@ int CBOR_GetDataItemFromPath(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* path
 
 	bytes = Tcl_GetBytesFromObj(interp, cborObj, &byteslen);
 	if (bytes == NULL) return TCL_ERROR;
-	TEST_OK(Tcl_ListObjGetElements(interp, pathObj, &pathc, &pathv));
+	if (pathObj) TEST_OK(Tcl_ListObjGetElements(interp, pathObj, &pathc, &pathv));
 
 	const uint8_t*const	e = bytes + byteslen;
 	p = bytes;
@@ -1299,7 +1301,7 @@ int CBOR_GetDataItemFromPath(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* path
 
 	for (int pathi=0; pathi<pathc; pathi++) {
 		Tcl_Obj*	pathElem = pathv[pathi];
-		Tcl_DStringSetLength(tagsPtr, 0);
+		if (tagsPtr) Tcl_DStringSetLength(tagsPtr, 0);
 
 	data_item: // loop: read off tags
 		// Read head {{{
@@ -1419,7 +1421,7 @@ int CBOR_GetDataItemFromPath(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* path
 				goto not_found;
 			//}}}
 			case M_TAG: //{{{
-				Tcl_DStringAppend(tagsPtr, (const char*)&val, sizeof(val));
+				if (tagsPtr) Tcl_DStringAppend(tagsPtr, (const char*)&val, sizeof(val));
 				goto data_item;
 				//}}}
 			default: BAD_PATH(); // Can only index into arrays and maps
@@ -1465,6 +1467,137 @@ int CBOR_Length(Tcl_Interp* interp, const uint8_t* p, const uint8_t* e, size_t* 
 }
 
 //}}}
+int CBOR_ReadHead(Tcl_Interp* interp, const uint8_t** pPtr, const uint8_t* e, CBOR_Head* head) //{{{
+{
+	const uint8_t*	p = *pPtr;
+	const uint8_t*	valPtr;
+
+	TAKE(1);
+	const uint8_t	ib = valPtr[0];
+	const uint8_t	mt = ib >> 5;
+	const uint8_t	ai = ib & 0x1f;
+	uint64_t		val = ai;
+
+	switch (ai) {
+		case 24: TAKE(1); val = *(uint8_t*)valPtr;           break;
+		case 25: TAKE(2); val = be16toh(*(uint16_t*)valPtr); break;
+		case 26: TAKE(4); val = be32toh(*(uint32_t*)valPtr); break;
+		case 27: TAKE(8); val = be64toh(*(uint64_t*)valPtr); break;
+		case 28: case 29: case 30: CBOR_INVALID("reserved additional info value: %d", ai);
+	}
+
+	*head = (CBOR_Head){.mt = mt, .ai = ai, .val = val};
+
+	if (ai == 31) {
+		switch (mt) {
+			case M_BSTR:
+			case M_UTF8:
+			case M_ARR:
+			case M_MAP:
+				head->indefinite = 1;
+				head->val = 0;
+				break;
+			case M_REAL:
+				head->isbreak = 1;
+				head->val = 0;
+				break;
+			default:
+				CBOR_INVALID("invalid indefinite length for major type %d", mt);
+		}
+	} else if (mt == M_REAL) {
+		switch (ai) {
+			case 24:
+				if (val < 32) CBOR_INVALID("simple value %d encoded in two bytes", (int)val);
+				break;
+			case 25: head->fval = decode_half(valPtr);   break;
+			case 26: head->fval = decode_float(valPtr);  break;
+			case 27: head->fval = decode_double(valPtr); break;
+		}
+	}
+
+	*pPtr = p;
+	return TCL_OK;
+}
+
+//}}}
+int CBOR_DecodeValue(Tcl_Interp* interp, const uint8_t** pPtr, const uint8_t* e, Tcl_Obj** resPtr, Tcl_Obj** tagsPtr) //{{{
+{
+	Tcl_Obj*	tags = NULL;
+	defer { replace_tclobj(&tags, NULL); }
+
+	if (tagsPtr) replace_tclobj(&tags, Tcl_NewListObj(0, NULL));
+	TEST_OK(cbor_get_obj(interp, pPtr, e, resPtr, tagsPtr ? &tags : NULL));
+	if (tagsPtr) replace_tclobj(tagsPtr, tags);
+	return TCL_OK;
+}
+
+//}}}
+static int find_dataitem(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* pathObj, const uint8_t** dataitemPtr, const uint8_t** ePtr) //{{{
+{
+	TEST_OK(CBOR_GetDataItemFromPath(interp, cborObj, pathObj, dataitemPtr, ePtr, NULL));
+	if (*dataitemPtr == NULL) {
+		Tcl_SetErrorCode(interp, "CBOR", "NOTFOUND", pathObj ? Tcl_GetString(pathObj) : "", NULL);
+		THROW_ERROR("path not found");
+	}
+	return TCL_OK;
+}
+
+//}}}
+int CBOR_Get(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* pathObj, Tcl_Obj** resPtr, Tcl_Obj** tagsPtr) //{{{
+{
+	const uint8_t*	dataitem = NULL;
+	const uint8_t*	e = NULL;
+
+	TEST_OK(find_dataitem(interp, cborObj, pathObj, &dataitem, &e));
+	return CBOR_DecodeValue(interp, &dataitem, e, resPtr, tagsPtr);
+}
+
+//}}}
+int CBOR_Extract(Tcl_Interp* interp, Tcl_Obj* cborObj, Tcl_Obj* pathObj, Tcl_Obj** resPtr) //{{{
+{
+	const uint8_t*	dataitem = NULL;
+	const uint8_t*	e = NULL;
+	size_t			len = 0;
+
+	TEST_OK(find_dataitem(interp, cborObj, pathObj, &dataitem, &e));
+	TEST_OK(CBOR_Length(interp, dataitem, e, &len));
+	replace_tclobj(resPtr, Tcl_NewByteArrayObj(dataitem, len));
+	return TCL_OK;
+}
+
+//}}}
+int CBOR_Pretty(Tcl_Interp* interp, const uint8_t* bytes, size_t len, Tcl_DString* ds) //{{{
+{
+	return cbor_pretty(interp, bytes, len, ds);
+}
+
+//}}}
+int CBOR_ApplyTag(Tcl_Interp* interp, uint64_t tag, Tcl_Obj* valueObj, Tcl_Obj** resPtr) //{{{
+{
+	switch (tag) {
+		case 2: // Unsigned bignum
+		case 3: // Negative bignum: -1 - n
+		{
+			Tcl_Size		bytelen;
+			const uint8_t*	bytes = Tcl_GetBytesFromObj(NULL, valueObj, &bytelen);
+			if (bytes == NULL)
+				THROW_PRINTF("Tag %d (%s bignum) requires a byte array value", (int)tag, tag == 2 ? "unsigned" : "negative");
+
+			mp_int	n;
+			if ((tag == 2 ? bignum_from_ubin : bignum_from_nbin)(&n, bytes, bytelen) != 0)
+				THROW_ERROR("Failed to convert byte array to bignum");
+			defer { bignum_clear(&n); }
+
+			replace_tclobj(resPtr, Tcl_NewBignumObj(&n));
+			return TCL_OK;
+		}
+
+		default:
+			THROW_PRINTF("Tag %" PRIu64 " not supported", tag);
+	}
+}
+
+//}}}
 // Stubs API }}}
 // Script API {{{
 static int cbor_nr_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
@@ -1504,24 +1637,14 @@ static int cbor_nr_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 			CHECK_MIN_ARGS("cbor ?key ...?");
 
 			Tcl_Obj*	path = NULL;
-			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
-			defer { replace_tclobj(&path, NULL); };
-
-			Tcl_DString	tags;
-			Tcl_DStringInit(&tags);
-			defer { Tcl_DStringFree(&tags); };
-
-			const uint8_t*	dataitem = NULL;
-			const uint8_t*	e = NULL;
-			TEST_OK(CBOR_GetDataItemFromPath(interp, objv[A_CBOR], path, &dataitem, &e, &tags));
-			if (dataitem == NULL) {
-				Tcl_SetErrorCode(interp, "CBOR", "NOTFOUND", Tcl_GetString(path), NULL);
-				THROW_ERROR("path not found");
+			Tcl_Obj*	res = NULL;
+			defer {
+				replace_tclobj(&path, NULL);
+				replace_tclobj(&res, NULL);
 			}
 
-			Tcl_Obj*	res = NULL;
-			TEST_OK(cbor_get_obj(interp, &dataitem, e, &res, NULL));
-			defer { replace_tclobj(&res, NULL); };
+			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
+			TEST_OK(CBOR_Get(interp, objv[A_CBOR], path, &res, NULL));
 			Tcl_SetObjResult(interp, res);
 			return TCL_OK;
 		}
@@ -1532,31 +1655,18 @@ static int cbor_nr_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 			CHECK_MIN_ARGS("tagsvar cbor ?key ...?");
 
 			Tcl_Obj*	path = NULL;
-			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
-			defer { replace_tclobj(&path, NULL); };
-
-			Tcl_DString	tags;
-			Tcl_DStringInit(&tags);
-			defer { Tcl_DStringFree(&tags); };
-
-			const uint8_t*	dataitem = NULL;
-			const uint8_t*	e = NULL;
-			TEST_OK(CBOR_GetDataItemFromPath(interp, objv[A_CBOR], path, &dataitem, &e, &tags));
-			if (dataitem == NULL) {
-				Tcl_SetErrorCode(interp, "CBOR", "NOTFOUND", Tcl_GetString(path), NULL);
-				THROW_ERROR("path not found");
+			Tcl_Obj*	res = NULL;
+			Tcl_Obj*	tags = NULL;
+			defer {
+				replace_tclobj(&path, NULL);
+				replace_tclobj(&res, NULL);
+				replace_tclobj(&tags, NULL);
 			}
 
-			Tcl_Obj*	tagslist = NULL;
-			Tcl_Obj*	res = NULL;
+			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
+			TEST_OK(CBOR_Get(interp, objv[A_CBOR], path, &res, &tags));
 
-			replace_tclobj(&tagslist, Tcl_NewListObj(0, NULL));
-			defer { replace_tclobj(&tagslist, NULL); };
-
-			TEST_OK(cbor_get_obj(interp, &dataitem, e, &res, &tagslist));
-			defer { replace_tclobj(&res, NULL); };
-
-			if (NULL == Tcl_ObjSetVar2(interp, objv[A_TAGSVAR], NULL, tagslist, TCL_LEAVE_ERR_MSG))
+			if (NULL == Tcl_ObjSetVar2(interp, objv[A_TAGSVAR], NULL, tags, TCL_LEAVE_ERR_MSG))
 				return TCL_ERROR;
 
 			Tcl_SetObjResult(interp, res);
@@ -1569,24 +1679,15 @@ static int cbor_nr_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 			CHECK_MIN_ARGS("cbor ?key ...?");
 
 			Tcl_Obj*	path = NULL;
-			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
-			defer { replace_tclobj(&path, NULL); };
-
-			Tcl_DString	tags;
-			Tcl_DStringInit(&tags);
-			defer { Tcl_DStringFree(&tags); };
-
-			const uint8_t*	dataitem = NULL;
-			const uint8_t*	e = NULL;
-			TEST_OK(CBOR_GetDataItemFromPath(interp, objv[A_CBOR], path, &dataitem, &e, &tags));
-			if (dataitem == NULL) {
-				Tcl_SetErrorCode(interp, "CBOR", "NOTFOUND", Tcl_GetString(path), NULL);
-				THROW_ERROR("path not found");
+			Tcl_Obj*	res = NULL;
+			defer {
+				replace_tclobj(&path, NULL);
+				replace_tclobj(&res, NULL);
 			}
 
-			size_t		len = 0;
-			TEST_OK(CBOR_Length(interp, dataitem, e, &len));
-			Tcl_SetObjResult(interp, Tcl_NewByteArrayObj(dataitem, len));
+			replace_tclobj(&path, Tcl_NewListObj(objc-A_PATH, objv+A_PATH));
+			TEST_OK(CBOR_Extract(interp, objv[A_CBOR], path, &res));
+			Tcl_SetObjResult(interp, res);
 			return TCL_OK;
 		}
 		//}}}
@@ -1612,49 +1713,14 @@ static int cbor_nr_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*c
 			CHECK_ARGS("tag value");
 
 			Tcl_WideInt	tag;
+			Tcl_Obj*	res = NULL;
+			defer { replace_tclobj(&res, NULL); }
+
 			TEST_OK(Tcl_GetWideIntFromObj(interp, objv[A_TAG], &tag));
-
-			switch (tag) {
-				case 2: // Unsigned bignum
-				{
-					Tcl_Size		bytelen;
-					const uint8_t*	bytes = Tcl_GetBytesFromObj(interp, objv[A_VALUE], &bytelen);
-					if (bytes == NULL) {
-						Tcl_SetObjResult(interp, Tcl_ObjPrintf("Tag 2 (unsigned bignum) requires a byte array value"));
-						return TCL_ERROR;
-					}
-
-					mp_int	n;
-					if (bignum_from_ubin(&n, bytes, bytelen) != 0)
-						THROW_ERROR("Failed to convert byte array to bignum");
-					defer { bignum_clear(&n); }
-
-					Tcl_SetObjResult(interp, Tcl_NewBignumObj(&n));
-					return TCL_OK;
-				}
-
-				case 3: // Negative bignum: -1 - n
-				{
-					Tcl_Size		bytelen;
-					const uint8_t*	bytes = Tcl_GetBytesFromObj(interp, objv[A_VALUE], &bytelen);
-					if (bytes == NULL) {
-						Tcl_SetObjResult(interp, Tcl_ObjPrintf("Tag 3 (negative bignum) requires a byte array value"));
-						return TCL_ERROR;
-					}
-
-					mp_int	n;
-					if (bignum_from_nbin(&n, bytes, bytelen) != 0)
-						THROW_ERROR("Failed to convert byte array to negative bignum");
-					defer { bignum_clear(&n); }
-
-					Tcl_SetObjResult(interp, Tcl_NewBignumObj(&n));
-					return TCL_OK;
-				}
-
-				default:
-					Tcl_SetObjResult(interp, Tcl_ObjPrintf("Tag %" TCL_LL_MODIFIER "d not supported", tag));
-					return TCL_ERROR;
-			}
+			if (tag < 0) THROW_PRINTF("Tag %" TCL_LL_MODIFIER "d not supported", tag);
+			TEST_OK(CBOR_ApplyTag(interp, (uint64_t)tag, objv[A_VALUE], &res));
+			Tcl_SetObjResult(interp, res);
+			return TCL_OK;
 		}
 		//}}}
 		case OP_TEMPLATE:
@@ -1708,9 +1774,16 @@ static void free_interp_cx(ClientData cdata, Tcl_Interp* interp) //{{{
 
 //}}}
 
+extern const CborStubs* const cborConstStubsPtr;
+
 DLLEXPORT int Cbor_Init(Tcl_Interp* interp) //{{{
 {
 	if (!Tcl_InitStubs(interp, TCL_VERSION, 0)) return TCL_ERROR;
+#if defined(USE_TCL_STUBS) && !defined(TCL_WITH_EXTERNAL_TOMMATH)
+	// mp_* calls go through Tcl's tommath stubs table unless built against an
+	// external libtommath: without this, bignum encoding derefs a NULL table
+	if (!Tcl_TomMath_InitStubs(interp, TCL_VERSION)) return TCL_ERROR;
+#endif
 
 	struct interp_cx*	l = NULL;
 	l = (struct interp_cx*)ckalloc(sizeof(*l));
@@ -1726,7 +1799,12 @@ DLLEXPORT int Cbor_Init(Tcl_Interp* interp) //{{{
 
 	Tcl_NRCreateCommand(interp, "::cbor", cbor_cmd, cbor_nr_cmd, l, NULL);
 
-	TEST_OK(Tcl_PkgProvide(interp, PACKAGE_NAME, PACKAGE_VERSION));
+	// pkgconfig (TIP 59) for consumers that compile against us (jitc's
+	// "package" cdef part): only when loaded from a pkgIndex.tcl that sets $dir
+	const char*	dir = Tcl_GetVar(interp, "dir", 0);
+	if (dir) register_config(interp, dir);
+
+	TEST_OK(Tcl_PkgProvideEx(interp, PACKAGE_NAME, PACKAGE_VERSION, cborConstStubsPtr));
 	l = NULL;
 
 	return TCL_OK;

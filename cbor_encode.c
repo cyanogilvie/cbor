@@ -18,6 +18,7 @@
 #include <defer.h>
 
 #include "cbor_encode.h"
+#include <cbor.h>
 
 // Major types
 enum { MT_UINT=0, MT_NINT=1, MT_BSTR=2, MT_UTF8=3, MT_ARR=4, MT_MAP=5, MT_TAG=6, MT_REAL=7 };
@@ -26,13 +27,7 @@ enum { MT_UINT=0, MT_NINT=1, MT_BSTR=2, MT_UTF8=3, MT_ARR=4, MT_MAP=5, MT_TAG=6,
 // Builds a Tcl_Obj byte array in-place with amortized O(1) append,
 // avoiding the final copy that a Tcl_DString approach would require.
 
-struct cbor_buf {
-	Tcl_Obj*	obj;
-	Tcl_Size	len;
-	Tcl_Size	cap;
-};
-
-static void buf_init(struct cbor_buf* b) //{{{
+static void buf_init(CBOR_Buf* b) //{{{
 {
 	b->obj = NULL;
 	replace_tclobj(&b->obj, Tcl_NewByteArrayObj(NULL, 0));
@@ -41,7 +36,7 @@ static void buf_init(struct cbor_buf* b) //{{{
 }
 
 //}}}
-static uint8_t* buf_grow(struct cbor_buf* b, Tcl_Size need) //{{{
+static uint8_t* buf_grow(CBOR_Buf* b, Tcl_Size need) //{{{
 {
 	Tcl_Size newlen = b->len + need;
 	if (newlen > b->cap) {
@@ -53,14 +48,14 @@ static uint8_t* buf_grow(struct cbor_buf* b, Tcl_Size need) //{{{
 }
 
 //}}}
-static void buf_append(struct cbor_buf* b, const void* data, Tcl_Size n) //{{{
+static void buf_append(CBOR_Buf* b, const void* data, Tcl_Size n) //{{{
 {
 	memcpy(buf_grow(b, n), data, n);
 	b->len += n;
 }
 
 //}}}
-static Tcl_Obj* buf_result(struct cbor_buf* b) //{{{
+static Tcl_Obj* buf_result(CBOR_Buf* b) //{{{
 {
 	// Trim to actual length.  Our replace_tclobj ref keeps it alive;
 	// the caller passes it to Tcl_SetObjResult (which adds another ref),
@@ -70,7 +65,7 @@ static Tcl_Obj* buf_result(struct cbor_buf* b) //{{{
 }
 
 //}}}
-static void buf_free(struct cbor_buf* b) //{{{
+static void buf_free(CBOR_Buf* b) //{{{
 {
 	replace_tclobj(&b->obj, NULL);
 }
@@ -79,7 +74,7 @@ static void buf_free(struct cbor_buf* b) //{{{
 // Byte array accumulator }}}
 // CBOR Primitive Encoding Helpers {{{
 
-static void emit_head(struct cbor_buf* buf, uint8_t mt, uint64_t val) //{{{
+static void emit_head(CBOR_Buf* buf, uint8_t mt, uint64_t val) //{{{
 {
 	uint8_t head = mt << 5;
 
@@ -113,48 +108,48 @@ static void emit_head(struct cbor_buf* buf, uint8_t mt, uint64_t val) //{{{
 }
 
 //}}}
-static void emit_uint(struct cbor_buf* buf, uint64_t val)		{ emit_head(buf, MT_UINT, val); }
-static void emit_nint(struct cbor_buf* buf, uint64_t val)		{ emit_head(buf, MT_NINT, val); }
-static void emit_bstr(struct cbor_buf* buf, const uint8_t* bytes, size_t len) //{{{
+static void emit_uint(CBOR_Buf* buf, uint64_t val)		{ emit_head(buf, MT_UINT, val); }
+static void emit_nint(CBOR_Buf* buf, uint64_t val)		{ emit_head(buf, MT_NINT, val); }
+static void emit_bstr(CBOR_Buf* buf, const uint8_t* bytes, size_t len) //{{{
 {
 	emit_head(buf, MT_BSTR, len);
 	buf_append(buf, bytes, len);
 }
 
 //}}}
-static void emit_utf8(struct cbor_buf* buf, const char* str, size_t len) //{{{
+static void emit_utf8(CBOR_Buf* buf, const char* str, size_t len) //{{{
 {
 	emit_head(buf, MT_UTF8, len);
 	buf_append(buf, str, len);
 }
 
 //}}}
-static void emit_tag(struct cbor_buf* buf, uint64_t tag)		{ emit_head(buf, MT_TAG, tag); }
-static void emit_array_head(struct cbor_buf* buf, uint64_t n)	{ emit_head(buf, MT_ARR, n); }
-static void emit_map_head(struct cbor_buf* buf, uint64_t n)	{ emit_head(buf, MT_MAP, n); }
+static void emit_tag(CBOR_Buf* buf, uint64_t tag)		{ emit_head(buf, MT_TAG, tag); }
+static void emit_array_head(CBOR_Buf* buf, uint64_t n)	{ emit_head(buf, MT_ARR, n); }
+static void emit_map_head(CBOR_Buf* buf, uint64_t n)	{ emit_head(buf, MT_MAP, n); }
 
-static void emit_bool(struct cbor_buf* buf, int val) //{{{
+static void emit_bool(CBOR_Buf* buf, int val) //{{{
 {
 	uint8_t b = (MT_REAL << 5) | (val ? 21 : 20);
 	buf_append(buf, &b, 1);
 }
 
 //}}}
-static void emit_null(struct cbor_buf* buf) //{{{
+static void emit_null(CBOR_Buf* buf) //{{{
 {
 	uint8_t b = (MT_REAL << 5) | 22;
 	buf_append(buf, &b, 1);
 }
 
 //}}}
-static void emit_undefined(struct cbor_buf* buf) //{{{
+static void emit_undefined(CBOR_Buf* buf) //{{{
 {
 	uint8_t b = (MT_REAL << 5) | 23;
 	buf_append(buf, &b, 1);
 }
 
 //}}}
-static int emit_simple(struct cbor_buf* buf, int val) //{{{
+static int emit_simple(CBOR_Buf* buf, int val) //{{{
 {
 	if (val < 0 || val > 255 || (val >= 24 && val <= 31))
 		return TCL_ERROR;
@@ -221,7 +216,7 @@ static uint16_t encode_half(double val) //{{{
 }
 
 //}}}
-static void emit_float(struct cbor_buf* buf, double val) //{{{
+static void emit_float(CBOR_Buf* buf, double val) //{{{
 {
 	// Try half-precision
 	uint16_t half = encode_half(val);
@@ -258,7 +253,7 @@ static void emit_float(struct cbor_buf* buf, double val) //{{{
 }
 
 //}}}
-static int emit_number_from_obj(Tcl_Interp* interp, struct cbor_buf* buf, Tcl_Obj* obj) //{{{
+static int emit_number_from_obj(Tcl_Interp* interp, CBOR_Buf* buf, Tcl_Obj* obj) //{{{
 {
 	void*	clientData;
 	int		numtype;
@@ -513,7 +508,7 @@ static int json_count_container(const char* p, const char* end, char close, size
 //}}}
 
 // Forward declaration
-static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, struct cbor_buf* buf, Tcl_Obj* dict, int depth);
+static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, CBOR_Buf* buf, Tcl_Obj* dict, int depth, int literal);
 
 static int resolve_var(Tcl_Interp* interp, const char* name, size_t namelen, Tcl_Obj* dict, Tcl_Obj** valuePtr) //{{{
 {
@@ -532,7 +527,7 @@ static int resolve_var(Tcl_Interp* interp, const char* name, size_t namelen, Tcl
 }
 
 //}}}
-static int emit_substitution(Tcl_Interp* interp, struct cbor_buf* buf, const char* marker, size_t len, Tcl_Obj* dict, int depth) //{{{
+static int emit_substitution(Tcl_Interp* interp, CBOR_Buf* buf, const char* marker, size_t len, Tcl_Obj* dict, int depth) //{{{
 {
 	if (len < 3 || marker[0] != '~' || (len >= 3 && marker[2] != ':' && !(len >= 4 && marker[1] == 'B' && marker[2] == 'Y' && marker[3] == ':')))
 		goto not_a_marker;
@@ -595,6 +590,19 @@ static int emit_substitution(Tcl_Interp* interp, struct cbor_buf* buf, const cha
 			emit_utf8(buf, varname, varlen);
 			return TCL_OK;
 		}
+		case 'J': { // JSON value, encoded as if it were a literal part of the template (RFC 8949 section 6.2), with no marker substitution inside it
+			Tcl_Obj* val = NULL;
+			TEST_OK(resolve_var(interp, varname, varlen, dict, &val));
+			if (!val) { emit_null(buf); return TCL_OK; }
+			Tcl_Size jlen;
+			const char* json = Tcl_GetStringFromObj(val, &jlen);
+			const char* jp = json;
+			const char* je = json + jlen;
+			TEST_OK(json_to_cbor(interp, &jp, je, buf, NULL, depth + 1, 1));
+			json_skip_ws(&jp, je);
+			if (jp != je) THROW_PRINTF("Trailing content after JSON value in ~J:%.*s", (int)varlen, varname);
+			return TCL_OK;
+		}
 		case 'T': { // Template
 			Tcl_Obj* val = NULL;
 			TEST_OK(resolve_var(interp, varname, varlen, dict, &val));
@@ -604,7 +612,7 @@ static int emit_substitution(Tcl_Interp* interp, struct cbor_buf* buf, const cha
 			const char* tp = tmpl;
 			const char* te = tmpl + tlen;
 			json_skip_ws(&tp, te);
-			return json_to_cbor(interp, &tp, te, buf, dict, depth + 1);
+			return json_to_cbor(interp, &tp, te, buf, dict, depth + 1, 0);
 		}
 		default:
 			goto not_a_marker;
@@ -616,7 +624,9 @@ not_a_marker:
 }
 
 //}}}
-static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, struct cbor_buf* buf, Tcl_Obj* dict, int depth) //{{{
+// literal: plain JSON (the ~J: marker) - strings and keys that look like
+// substitution markers, and {"~tag": ..., "~val": ...} objects, are just data
+static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, CBOR_Buf* buf, Tcl_Obj* dict, int depth, int literal) //{{{
 {
 	if (depth > JSON_MAX_DEPTH)
 		THROW_ERROR("JSON template nesting too deep");
@@ -638,7 +648,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 			const char* s = Tcl_DStringValue(&str);
 			size_t slen = Tcl_DStringLength(&str);
 
-			if (slen >= 3 && s[0] == '~')
+			if (!literal && slen >= 3 && s[0] == '~')
 				return emit_substitution(interp, buf, s, slen, dict, depth);
 
 			emit_utf8(buf, s, slen);
@@ -662,7 +672,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 				THROW_ERROR("Malformed JSON object");
 
 			// Check for tag directive: exactly 2 keys, ~tag and ~val
-			if (count == 2) {
+			if (!literal && count == 2) {
 				const char* peek = p;
 				Tcl_DString key1, key2;
 				Tcl_DStringInit(&key1);
@@ -755,7 +765,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 
 					emit_tag(buf, (uint64_t)tag_num);
 					const char* vp = val_start;
-					return json_to_cbor(interp, &vp, val_end_pos, buf, dict, depth + 1);
+					return json_to_cbor(interp, &vp, val_end_pos, buf, dict, depth + 1, 0);
 				}
 			}
 
@@ -773,7 +783,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 				// Key: check for substitution markers (enables non-string map keys)
 				const char* ks = Tcl_DStringValue(&key);
 				size_t klen = Tcl_DStringLength(&key);
-				if (klen >= 3 && ks[0] == '~') {
+				if (!literal && klen >= 3 && ks[0] == '~') {
 					TEST_OK(emit_substitution(interp, buf, ks, klen, dict, depth));
 				} else {
 					emit_utf8(buf, ks, klen);
@@ -783,7 +793,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 				if (p >= end || *p != ':') THROW_ERROR("Expected ':' in JSON object");
 				p++;
 
-				TEST_OK(json_to_cbor(interp, &p, end, buf, dict, depth + 1));
+				TEST_OK(json_to_cbor(interp, &p, end, buf, dict, depth + 1, literal));
 
 				json_skip_ws(&p, end);
 				if (p < end && *p == ',') p++;
@@ -814,7 +824,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 
 			emit_array_head(buf, count);
 			for (size_t i = 0; i < count; i++) {
-				TEST_OK(json_to_cbor(interp, &p, end, buf, dict, depth + 1));
+				TEST_OK(json_to_cbor(interp, &p, end, buf, dict, depth + 1, literal));
 				json_skip_ws(&p, end);
 				if (p < end && *p == ',') p++;
 			}
@@ -880,7 +890,7 @@ static int json_to_cbor(Tcl_Interp* interp, const char** pp, const char* end, st
 // JSON Parser }}}
 // Command implementations {{{
 
-int cbor_encode_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
+MODULE_SCOPE int cbor_encode_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
 {
 	(void)cdata;
 	static const char* enc_types[] = {
@@ -898,7 +908,7 @@ int cbor_encode_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 
 	TEST_OK(Tcl_GetIndexFromObj(interp, objv[A_TYPE], enc_types, "type", TCL_EXACT, (int*)&type));
 
-	struct cbor_buf ds;
+	CBOR_Buf ds;
 	buf_init(&ds);
 	defer { buf_free(&ds); }
 
@@ -1081,7 +1091,7 @@ int cbor_encode_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*cons
 }
 
 //}}}
-int cbor_template_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
+MODULE_SCOPE int cbor_template_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*const objv[]) //{{{
 {
 	(void)cdata;
 	enum {A_cmd, A_TEMPLATE, A_args};
@@ -1092,33 +1102,99 @@ int cbor_template_cmd(ClientData cdata, Tcl_Interp* interp, int objc, Tcl_Obj*co
 		return TCL_ERROR;
 	}
 
-	Tcl_Obj* dict = (objc > A_TEMPLATE + 1) ? objv[A_TEMPLATE + 1] : NULL;
+	Tcl_Obj*	res = NULL;
+	defer { replace_tclobj(&res, NULL); }
 
-	if (dict) {
-		Tcl_Size sz;
-		TEST_OK(Tcl_DictObjSize(interp, dict, &sz));
-	}
-
-	Tcl_Size tlen;
-	const char* tmpl = Tcl_GetStringFromObj(objv[A_TEMPLATE], &tlen);
-	const char* p = tmpl;
-	const char* e = tmpl + tlen;
-
-	struct cbor_buf ds;
-	buf_init(&ds);
-	defer { buf_free(&ds); }
-
-	json_skip_ws(&p, e);
-	TEST_OK(json_to_cbor(interp, &p, e, &ds, dict, 0));
-
-	json_skip_ws(&p, e);
-	if (p != e) THROW_ERROR("Trailing content after JSON value");
-
-	Tcl_SetObjResult(interp, buf_result(&ds));
+	TEST_OK(CBOR_Template(interp, objv[A_TEMPLATE], objc > A_TEMPLATE + 1 ? objv[A_TEMPLATE + 1] : NULL, &res));
+	Tcl_SetObjResult(interp, res);
 	return TCL_OK;
 }
 
 //}}}
 // Command implementations }}}
+// Stubs API {{{
+int CBOR_Template(Tcl_Interp* interp, Tcl_Obj* templateObj, Tcl_Obj* dictObj, Tcl_Obj** resPtr) //{{{
+{
+	if (dictObj) {
+		Tcl_Size sz;
+		TEST_OK(Tcl_DictObjSize(interp, dictObj, &sz));
+	}
+
+	Tcl_Size tlen;
+	const char* tmpl = Tcl_GetStringFromObj(templateObj, &tlen);
+	const char* p = tmpl;
+	const char* e = tmpl + tlen;
+
+	CBOR_Buf ds;
+	buf_init(&ds);
+	defer { buf_free(&ds); }
+
+	json_skip_ws(&p, e);
+	TEST_OK(json_to_cbor(interp, &p, e, &ds, dictObj, 0, 0));
+
+	json_skip_ws(&p, e);
+	if (p != e) THROW_ERROR("Trailing content after JSON value");
+
+	replace_tclobj(resPtr, buf_result(&ds));
+	return TCL_OK;
+}
+
+//}}}
+void CBOR_BufInit(CBOR_Buf* buf)			{ buf_init(buf); }
+void CBOR_BufFree(CBOR_Buf* buf)			{ buf_free(buf); }
+Tcl_Obj* CBOR_BufResult(CBOR_Buf* buf)		{ return buf_result(buf); }
+void CBOR_EmitHead(CBOR_Buf* buf, CBOR_MajorType mt, uint64_t val) { emit_head(buf, (uint8_t)mt, val); }
+int CBOR_EmitIndefinite(Tcl_Interp* interp, CBOR_Buf* buf, CBOR_MajorType mt) //{{{
+{
+	switch (mt) {
+		case CBOR_MT_BYTES:
+		case CBOR_MT_TEXT:
+		case CBOR_MT_ARRAY:
+		case CBOR_MT_MAP:
+		{
+			const uint8_t	ib = (uint8_t)(mt << 5) | 31;
+			buf_append(buf, &ib, 1);
+			return TCL_OK;
+		}
+		default:
+			if (interp) Tcl_SetObjResult(interp, Tcl_ObjPrintf("Major type %d cannot be indefinite-length", mt));
+			return TCL_ERROR;
+	}
+}
+
+//}}}
+void CBOR_EmitBreak(CBOR_Buf* buf) //{{{
+{
+	const uint8_t	b = 0xFF;
+	buf_append(buf, &b, 1);
+}
+
+//}}}
+void CBOR_EmitBytes(CBOR_Buf* buf, const uint8_t* bytes, size_t len)	{ emit_bstr(buf, bytes, len); }
+void CBOR_EmitText(CBOR_Buf* buf, const char* str, size_t len)		{ emit_utf8(buf, str, len); }
+void CBOR_EmitWideInt(CBOR_Buf* buf, Tcl_WideInt val) //{{{
+{
+	if (val >= 0)	emit_uint(buf, (uint64_t)val);
+	else			emit_nint(buf, (uint64_t)(-1 - val));
+}
+
+//}}}
+void CBOR_EmitFloat(CBOR_Buf* buf, double val)							{ emit_float(buf, val); }
+int CBOR_EmitNumber(Tcl_Interp* interp, CBOR_Buf* buf, Tcl_Obj* numObj)	{ return emit_number_from_obj(interp, buf, numObj); }
+void CBOR_EmitBool(CBOR_Buf* buf, int val)								{ emit_bool(buf, val); }
+void CBOR_EmitNull(CBOR_Buf* buf)										{ emit_null(buf); }
+void CBOR_EmitUndefined(CBOR_Buf* buf)									{ emit_undefined(buf); }
+int CBOR_EmitSimple(Tcl_Interp* interp, CBOR_Buf* buf, int val) //{{{
+{
+	if (emit_simple(buf, val) != TCL_OK) {
+		if (interp) Tcl_SetObjResult(interp, Tcl_ObjPrintf("Invalid simple value %d (must be 0-23 or 32-255)", val));
+		return TCL_ERROR;
+	}
+	return TCL_OK;
+}
+
+//}}}
+void CBOR_EmitRaw(CBOR_Buf* buf, const uint8_t* bytes, size_t len)		{ buf_append(buf, bytes, len); }
+// Stubs API }}}
 
 // vim: foldmethod=marker foldmarker={{{,}}} ts=4 shiftwidth=4

@@ -209,6 +209,7 @@ not exist, CBOR null is emitted.
 | `~BY:var`  | byte string from *var*                        |
 | `~L:text`  | literal text string (the text after `~L:` is the value) |
 | `~T:var`   | recursive template (value of *var* is JSON, processed with the same dictionary) |
+| `~J:var`   | the JSON value in *var*, encoded as if it were a literal part of the template, but without substituting markers |
 
 Substitution markers work in both **value** and **key** positions of
 JSON objects.  This enables maps with non-string keys, as required by
@@ -221,6 +222,19 @@ cbor template {{"~N:alg": "~N:algval", "~N:kid": "~BY:kidval"}} \
 ~~~
 
 Plain (unsubstituted) keys are encoded as UTF-8 text strings as usual.
+
+The value of a **~J:** marker is JSON text (such as an **rl_json** value),
+converted as RFC 8949 section 6.2 describes, which is the same way the
+template's own literals are converted: objects become maps with text string
+keys in document order, arrays become arrays, strings become text strings,
+numbers without a fraction or exponent become integers (tags 2 and 3 for
+those beyond 64 bits) and other numbers become floats in the smallest
+precision that represents them exactly, and **true**, **false** and **null**
+become the corresponding simple values.  Unlike **~T:**, the value is data,
+not a template: strings that look like substitution markers, and objects
+shaped like tag directives, are encoded as they are.  No other conversions
+are attempted (strings are never turned into byte strings, dates or
+numbers), since JSON can't say which strings were meant as any of those.
 
 ### Tag Directives
 
@@ -322,6 +336,188 @@ Encode individual CBOR values with **cbor encode**:
 
 ``` {.tcl include="examples/encode_primitives.tcl"}
 ```
+
+
+## C API
+
+The package exports a C API through a Tcl stubs table, for other extensions
+(and JIT-compiled C) that need to produce or consume CBOR without going
+through the script-level commands.  The public header is **cbor.h**, installed
+in the package directory alongside **cborDecls.h** and the stubs library
+**libcborstub.a**.
+
+### Using the API
+
+From a meson-built extension, depend on **cbor** (resolved through the
+installed **cbor.pc**, or a subproject wrap providing the **cbor**
+dependency), which supplies the include path, the stubs library and
+**-DUSE_CBOR_STUBS=1**, and initialise the stubs after Tcl's:
+
+```c
+#include <cbor.h>
+
+DLLEXPORT int Myext_Init(Tcl_Interp* interp)
+{
+    if (Tcl_InitStubs(interp, TCL_VERSION, 0) == NULL) return TCL_ERROR;
+    if (Cbor_InitStubs(interp) == NULL) return TCL_ERROR;
+    ...
+}
+```
+
+**Cbor_InitStubs** does a **package require** of at least the version of
+@PACKAGE_NAME@ the extension was compiled against.  Other build systems can
+get the same flags from `pkg-config --cflags --libs cbor`.
+
+The package registers its build information with **Tcl_RegisterConfig**
+(TIP 59) as **cbor::pkgconfig**, with the keys **header**, **library**,
+**stublib**, **includedir,runtime**, **libdir,runtime** and
+**packagedir,runtime** (the latter three are the directory the package was
+loaded from).  This lets **jitc** link C code directly against the package:
+
+```tcl
+package require jitc
+jitc::capply {
+    package {cbor @PACKAGE_VERSION@}
+    code {
+        OBJCMD(pair) {
+            CBOR_Buf b;
+            CBOR_BufInit(&b);
+            CBOR_EmitHead(&b, CBOR_MT_ARRAY, 2);
+            CBOR_EmitText(&b, "pi", 2);
+            CBOR_EmitFloat(&b, 3.14159);
+            Tcl_SetObjResult(interp, CBOR_BufResult(&b));
+            CBOR_BufFree(&b);
+            return TCL_OK;
+        }
+    }
+} pair
+```
+
+### Conventions
+
+Functions returning **int** return **TCL_OK** or **TCL_ERROR**, and on error
+leave a message (replacing the interp result) and, for malformed or
+truncated CBOR, the same **-errorcode** as the script commands
+(see **EXCEPTIONS**).  *interp* may be NULL for functions that only report
+errors through it.
+
+Results returned through a **Tcl_Obj\*\*** argument are assigned in the
+manner of **replace_tclobj**: any object the variable already references is
+released, and the variable then holds a reference to the result, which the
+caller must eventually release.  Initialise such variables to NULL.
+
+Decoding functions take the bounds of the CBOR data as a pointer *p* to the
+start of a data item and a pointer *e* just past the end of the buffer, and
+never read beyond *e*.  Functions taking **pPtr** advance it past the data
+they consume.
+
+### Decoding
+
+**int CBOR_WellFormed**(*interp*, const uint8_t\* *bytes*, size_t *len*)
+:   As **cbor wellformed**: check that *bytes* holds exactly one well-formed
+    data item.
+
+**int CBOR_Length**(*interp*, const uint8_t\* *p*, const uint8_t\* *e*, size_t\* *lenPtr*)
+:   Store in *lenPtr* the length in bytes of the (well-formed) data item at
+    *p*, including any tags.  Use it to skip an item.
+
+**int CBOR_ReadHead**(*interp*, const uint8_t\*\* *pPtr*, const uint8_t\* *e*, CBOR_Head\* *head*)
+:   Decode the head of the data item at *\*pPtr* into *head* and advance
+    *\*pPtr* past it, for walking CBOR one item at a time.  The fields of
+    **CBOR_Head** are: **mt** (a **CBOR_MajorType**: **CBOR_MT_UINT**,
+    **\_NINT**, **\_BYTES**, **\_TEXT**, **\_ARRAY**, **\_MAP**, **\_TAG** or
+    **\_SIMPLE**), **ai** (the additional information), **val** (the
+    argument: the integer value, the byte length of a string, the element or
+    pair count, the tag number or the simple value), **indefinite** (set for
+    indefinite-length strings, arrays and maps), **isbreak** (set for the
+    break stop code that ends them) and **fval** (the value of a half,
+    single or double float).  The payload of a definite-length byte or text
+    string (**val** bytes) follows the head and is not consumed.
+
+**int CBOR_DecodeValue**(*interp*, const uint8_t\*\* *pPtr*, const uint8_t\* *e*, Tcl_Obj\*\* *resPtr*, Tcl_Obj\*\* *tagsPtr*)
+:   Decode the complete data item at *\*pPtr* to a Tcl value (as described
+    in **Type Mapping**), and advance *\*pPtr* past it.  If *tagsPtr* is not
+    NULL it receives the list of tag numbers applied to the item.
+
+**int CBOR_GetDataItemFromPath**(*interp*, Tcl_Obj\* *cborObj*, Tcl_Obj\* *pathObj*, const uint8_t\*\* *dataitemPtr*, const uint8_t\*\* *ePtr*, Tcl_DString\* *tagsPtr*)
+:   Resolve the list of keys *pathObj* (as for **cbor get**; NULL for the
+    root) in the byte array *cborObj* without decoding, setting
+    *\*dataitemPtr* to the addressed data item (NULL if the path doesn't
+    exist) and *\*ePtr* to the end of the buffer.  The pointers refer into
+    *cborObj*'s byte array and are valid while it is unmodified.  If
+    *tagsPtr* is not NULL it receives the tags of the last container
+    traversed, as packed **uint64_t** values.
+
+**int CBOR_Get**(*interp*, Tcl_Obj\* *cborObj*, Tcl_Obj\* *pathObj*, Tcl_Obj\*\* *resPtr*, Tcl_Obj\*\* *tagsPtr*)
+:   As **cbor get** (or **cbor tget** when *tagsPtr* is not NULL).  Throws
+    **CBOR NOTFOUND** if the path doesn't exist.
+
+**int CBOR_Extract**(*interp*, Tcl_Obj\* *cborObj*, Tcl_Obj\* *pathObj*, Tcl_Obj\*\* *resPtr*)
+:   As **cbor extract**.
+
+**int CBOR_Pretty**(*interp*, const uint8_t\* *bytes*, size_t *len*, Tcl_DString\* *ds*)
+:   As **cbor pretty**, appending to the initialised *ds*.
+
+**int CBOR_ApplyTag**(*interp*, uint64_t *tag*, Tcl_Obj\* *valueObj*, Tcl_Obj\*\* *resPtr*)
+:   As **cbor apply_tag**.
+
+### Encoding
+
+**int CBOR_Template**(*interp*, Tcl_Obj\* *templateObj*, Tcl_Obj\* *dictObj*, Tcl_Obj\*\* *resPtr*)
+:   As **cbor template**.  If *dictObj* is NULL, substitutions resolve
+    variables in the current call frame.
+
+To build CBOR item by item, stack-allocate a **CBOR_Buf**, initialise it with
+**CBOR_BufInit**, append items with the functions below, and finally take the
+result with **CBOR_BufResult** and release the buffer with **CBOR_BufFree**.
+The object returned by **CBOR_BufResult** is owned by the buffer: take a
+reference to it (or pass it to **Tcl_SetObjResult**) before
+**CBOR_BufFree**.  A buffer must be freed even if encoding fails part way.
+Container heads are written explicitly, so the caller is responsible for
+following an array head of *n* with *n* items, a map head of *n* with *n*
+key / value pairs, and an indefinite-length head with its items and a break.
+
+**void CBOR_BufInit**(CBOR_Buf\* *buf*)\
+**void CBOR_BufFree**(CBOR_Buf\* *buf*)\
+**Tcl_Obj\* CBOR_BufResult**(CBOR_Buf\* *buf*)
+:   Buffer lifecycle, as described above.
+
+**void CBOR_EmitHead**(CBOR_Buf\* *buf*, CBOR_MajorType *mt*, uint64_t *val*)
+:   Append a head with the smallest encoding of *val*: an unsigned integer
+    (**CBOR_MT_UINT**), a negative integer *-1-val* (**CBOR_MT_NINT**), a tag
+    (**CBOR_MT_TAG**), or the head of a definite-length array or map
+    (**CBOR_MT_ARRAY**, **CBOR_MT_MAP**) of *val* items or pairs.
+
+**int CBOR_EmitIndefinite**(*interp*, CBOR_Buf\* *buf*, CBOR_MajorType *mt*)\
+**void CBOR_EmitBreak**(CBOR_Buf\* *buf*)
+:   Start an indefinite-length byte string, text string, array or map (an
+    error for any other major type), and end it.
+
+**void CBOR_EmitBytes**(CBOR_Buf\* *buf*, const uint8_t\* *bytes*, size_t *len*)\
+**void CBOR_EmitText**(CBOR_Buf\* *buf*, const char\* *str*, size_t *len*)
+:   Append a byte string, or a text string (*str* must be UTF-8).
+
+**void CBOR_EmitWideInt**(CBOR_Buf\* *buf*, Tcl_WideInt *val*)
+:   Append an integer.
+
+**void CBOR_EmitFloat**(CBOR_Buf\* *buf*, double *val*)
+:   Append a float in the smallest precision that represents *val* exactly,
+    as for **cbor encode float**.
+
+**int CBOR_EmitNumber**(*interp*, CBOR_Buf\* *buf*, Tcl_Obj\* *numObj*)
+:   Append the Tcl number *numObj*, as for the **~N:** template marker:
+    integers (including bignums, as tags 2 and 3) as integers, and doubles
+    as floats.
+
+**void CBOR_EmitBool**(CBOR_Buf\* *buf*, int *val*)\
+**void CBOR_EmitNull**(CBOR_Buf\* *buf*)\
+**void CBOR_EmitUndefined**(CBOR_Buf\* *buf*)\
+**int CBOR_EmitSimple**(*interp*, CBOR_Buf\* *buf*, int *val*)
+:   Append a simple value.  **CBOR_EmitSimple** rejects the reserved values
+    24-31 and values outside 0-255.
+
+**void CBOR_EmitRaw**(CBOR_Buf\* *buf*, const uint8_t\* *bytes*, size_t *len*)
+:   Append pre-encoded CBOR verbatim (not validated).
 
 
 ## BUILDING

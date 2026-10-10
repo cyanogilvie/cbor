@@ -1,0 +1,78 @@
+#ifndef _CBOR_H
+#define _CBOR_H
+#include <tcl.h>
+#include <stdint.h>
+#include <stddef.h>
+
+/* Tcl 8.6 has no Tcl_Size (TIP 660): provide it as Tcl 8.7's tcl.h does.  The
+ * guards let this coexist with a consumer's own polyfill (such as teabase's
+ * config.h #define Tcl_Size int), whichever comes first. */
+#if TCL_MAJOR_VERSION < 9 && !defined(TCL_SIZE_MAX)
+#	ifndef Tcl_Size
+		typedef int Tcl_Size;
+#	endif
+#	define TCL_SIZE_MAX ((int)(((unsigned int)-1)>>1))
+#	ifndef TCL_SIZE_MODIFIER
+#		define TCL_SIZE_MODIFIER ""
+#	endif
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef BUILD_cbor
+#undef TCL_STORAGE_CLASS
+#define TCL_STORAGE_CLASS DLLEXPORT
+#endif
+
+/* CBOR major types (RFC 8949 section 3.1) */
+typedef enum CBOR_MajorType {
+	CBOR_MT_UINT	= 0,
+	CBOR_MT_NINT	= 1,
+	CBOR_MT_BYTES	= 2,
+	CBOR_MT_TEXT	= 3,
+	CBOR_MT_ARRAY	= 4,
+	CBOR_MT_MAP		= 5,
+	CBOR_MT_TAG		= 6,
+	CBOR_MT_SIMPLE	= 7		/* Simple values, floats and the break stop code */
+} CBOR_MajorType;
+
+/* The decoded head (initial byte and argument) of a data item, filled in by
+ * CBOR_ReadHead */
+typedef struct CBOR_Head {
+	CBOR_MajorType	mt;
+	uint8_t			ai;			/* Additional information: low 5 bits of the initial byte */
+	int				indefinite;	/* Indefinite-length bytes, text, array or map (ai 31) */
+	int				isbreak;	/* The break stop code (0xff) that ends an indefinite-length item */
+	uint64_t		val;		/* The argument: integer value, byte / codepoint length, element or pair count, tag number, or simple value */
+	double			fval;		/* For CBOR_MT_SIMPLE with ai 25, 26 or 27: the half, single or double float value */
+} CBOR_Head;
+
+/* Encoder output buffer.  Stack-allocate one, CBOR_BufInit it, append items
+ * with the CBOR_Emit* functions, take the result with CBOR_BufResult and
+ * release it with CBOR_BufFree.  The members are private. */
+typedef struct CBOR_Buf {
+	Tcl_Obj*	obj;
+	Tcl_Size	len;
+	Tcl_Size	cap;
+} CBOR_Buf;
+
+/* Stubs exported API */
+
+#ifdef USE_CBOR_STUBS
+extern const char* CborInitializeStubs(Tcl_Interp* interp);
+#define Cbor_InitStubs(interp)	CborInitializeStubs((interp))
+#else
+#define Cbor_InitStubs(interp)	Tcl_PkgRequire((interp), "@PACKAGE_NAME@", "@PACKAGE_VERSION@", 0)
+#endif
+
+#include "cborDecls.h"
+
+EXTERN int Cbor_Init(Tcl_Interp* interp);
+EXTERN int Cbor_SafeInit(Tcl_Interp* interp);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
