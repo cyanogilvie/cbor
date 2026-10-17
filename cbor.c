@@ -594,7 +594,7 @@ static int cbor_match_map(Tcl_Interp* interp, uint8_t ai, uint64_t val, const ui
 			{
 				// Defer dealing with these until there is nothing else that could cause a mismatch
 				Tcl_HashEntry*	he = NULL;
-				he = Tcl_CreateHashEntry(&remaining, i, NULL);
+				he = Tcl_CreateHashEntry(&remaining, (void*)(uintptr_t)i, NULL);
 				Tcl_SetHashValue(he, (void*)p);
 				TEST_OK(well_formed(interp, &p, e, 0, NULL));
 				break;
